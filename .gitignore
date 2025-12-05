@@ -1,0 +1,39 @@
+# 1. Dependencies (Thư viện nặng, không up lên git)
+node_modules/
+
+# 2. Environment Variables (BẢO MẬT TUYỆT ĐỐI - KHÔNG ĐƯỢC XÓA DÒNG NÀY)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# 3. Logs (File nhật ký lỗi)
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+logs
+*.log
+
+# 4. OS Files (File rác của hệ điều hành)
+.DS_Store
+Thumbs.db
+
+# 5. IDE Settings (Cấu hình riêng của VSCode, WebStorm...)
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 6. Hardhat / Blockchain Build Artifacts
+# (Phòng trường hợp bạn chạy hardhat compile trong này)
+artifacts/
+cache/
+coverage/
+coverage.json
+typechain/
+typechain-types/
+
+# 7. Coverage reports
+coverage/
