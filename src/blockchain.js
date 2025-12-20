@@ -13,6 +13,7 @@ const contract = new ethers.Contract(
   ticketArtifact.abi,
   wallet
 );
+const ticketInterface = new ethers.Interface(ticketArtifact.abi);
 
 /**
  * Hàm gọi Smart Contract để Mint Batch (Gom nhiều người)
@@ -31,13 +32,48 @@ async function mintBatchOnChain(recipients, quantities) {
 
     const receipt = await tx.wait(1);
 
+    // Thu thập danh sách tokenId được mint trong transaction này
+    const mintedTokenIds = [];
+
+    for (const log of receipt.logs) {
+      let parsed = null;
+      try {
+        parsed = ticketInterface.parseLog(log);
+      } catch {
+        // Log không thuộc contract này -> bỏ qua
+      }
+
+      if (!parsed || !parsed.name || !parsed.args) continue;
+
+      if (parsed.name === "Transfer") {
+        const from = parsed.args.from;
+        const tokenId = parsed.args.tokenId;
+        if (from && from.toLowerCase() === ethers.ZeroAddress.toLowerCase()) {
+          mintedTokenIds.push(tokenId.toString());
+        }
+      } else if (parsed.name === "ConsecutiveTransfer") {
+        const from = parsed.args.from;
+        if (from && from.toLowerCase() === ethers.ZeroAddress.toLowerCase()) {
+          let fromId = parsed.args.fromTokenId;
+          const toId = parsed.args.toTokenId;
+          // fromId, toId là BigInt trong ethers v6
+          for (let id = fromId; id <= toId; id = id + 1n) {
+            mintedTokenIds.push(id.toString());
+          }
+        }
+      }
+    }
+
     console.log(
-      `✅ Mint thành công! Block: ${receipt.blockNumber}, Gas Used: ${receipt.gasUsed}`
+      `✅ Mint thành công! Block: ${receipt.blockNumber}, Gas Used: ${
+        receipt.gasUsed
+      }, Token IDs: ${mintedTokenIds.join(", ")}`
     );
     return {
       success: true,
       txHash: tx.hash,
       blockNumber: receipt.blockNumber,
+      tokenIds: mintedTokenIds,
     };
   } catch (error) {
     console.error("❌ Lỗi Mint:", error.message);

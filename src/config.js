@@ -2,11 +2,35 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const config = {
-  // 1. Cấu hình Redis
+  // 1. Cấu hình Redis (Đã tối ưu để tránh lỗi ECONNRESET)
   redis: {
     host: process.env.REDIS_HOST || "localhost",
     port: parseInt(process.env.REDIS_PORT) || 6379,
-    password: process.env.REDIS_PASSWORD, // <--- THÊM DÒNG NÀY
+    password: process.env.REDIS_PASSWORD,
+
+    // --- BẮT ĐẦU PHẦN SỬA ĐỔI ---
+
+    // 1. Ping Redis mỗi 10 giây để giữ kết nối luôn sống (Fix lỗi ECONNRESET)
+    keepAlive: 10000,
+
+    // 2. Bắt buộc phải có dòng này khi dùng BullMQ (theo document)
+    // Nếu không có, BullMQ sẽ báo lỗi khi Redis chập chờn
+    maxRetriesPerRequest: null,
+
+    // 3. Thời gian chờ kết nối tối đa (10 giây)
+    connectTimeout: 10000,
+
+    // 4. Chiến lược tự động kết nối lại khi bị rớt mạng
+    retryStrategy: function (times) {
+      // Thử lại sau: 50ms, 100ms, 150ms... tối đa chờ 2 giây
+      const delay = Math.min(times * 50, 2000);
+      return delay;
+    },
+
+    // (Tùy chọn) Nếu dùng Redis Cloud có SSL (địa chỉ rediss://), bỏ comment dòng dưới:
+    // tls: { rejectUnauthorized: false },
+
+    // --- KẾT THÚC PHẦN SỬA ĐỔI ---
   },
 
   // 2. Cấu hình Blockchain (Polygon Amoy)
@@ -17,18 +41,16 @@ const config = {
   },
 
   // 3. Chiến lược MINT (Ưu tiên tốc độ UX)
-  // Worker sẽ gom vé để mint, nhưng không đợi quá lâu (mặc định 10s)
   mintStrategy: {
-    batchSize: parseInt(process.env.MINT_BATCH_SIZE) || 10, // Gom 10 vé
-    batchTimeout: parseInt(process.env.MINT_BATCH_TIMEOUT) || 10000, // Hoặc đợi 10s
+    batchSize: parseInt(process.env.MINT_BATCH_SIZE) || 10,
+    batchTimeout: parseInt(process.env.MINT_BATCH_TIMEOUT) || 10000,
     queueName: "mint-queue",
   },
 
   // 4. Chiến lược CHECK-IN (Ưu tiên tiết kiệm Gas)
-  // Worker gom các vé đã soát ở cổng để đồng bộ lên Chain 1 thể
   checkInStrategy: {
-    batchSize: parseInt(process.env.CHECKIN_BATCH_SIZE) || 50, // Gom 50 vé
-    batchTimeout: parseInt(process.env.CHECKIN_BATCH_TIMEOUT) || 60000, // Hoặc đợi 60s
+    batchSize: parseInt(process.env.CHECKIN_BATCH_SIZE) || 50,
+    batchTimeout: parseInt(process.env.CHECKIN_BATCH_TIMEOUT) || 60000,
     queueName: "checkin-queue",
   },
 
@@ -37,10 +59,13 @@ const config = {
     pinataApiKey: process.env.PINATA_API_KEY,
     pinataSecretKey: process.env.PINATA_SECRET_KEY,
   },
+  // 6. Cấu hình Backend API
+  backend: {
+    url: process.env.BACKEND_URL || "http://localhost:3001/api",
+  },
 };
 
 // --- VALIDATE ---
-// Kiểm tra các biến bắt buộc, nếu thiếu thì crash app ngay lập tức để dễ debug
 if (
   !config.blockchain.privateKey ||
   !config.blockchain.contractAddress ||

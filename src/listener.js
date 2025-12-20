@@ -31,12 +31,20 @@ async function startListener() {
 
     // GỌI WEBHOOK VỀ REPO 1 ĐỂ UPDATE DB
     try {
-      await axios.post("http://localhost:3000/api/webhook/transfer", {
+      const payload = {
         tokenId: tokenId.toString(),
         fromAddress: from,
         toAddress: to,
         txHash: event.log.transactionHash,
-      });
+      };
+
+      console.log(
+        `📞 [LISTENER] Gọi webhook transfer: http://localhost:3000/api/webhook/transfer với payload: ${JSON.stringify(
+          payload
+        )}`
+      );
+
+      await axios.post("http://localhost:3000/api/webhook/transfer", payload);
       console.log("✅ Đã báo Backend cập nhật chủ sở hữu mới.");
     } catch (err) {
       console.error("❌ Lỗi gọi API Backend:", err.message);

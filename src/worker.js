@@ -1,5 +1,6 @@
 import { Worker } from "bullmq";
 import config from "./config.js";
+import axios from "axios";
 import {
   mintBatchOnChain,
   executeBatchCheckInOnChain,
@@ -16,10 +17,72 @@ console.log("🚀 Đang khởi động ShineTicket Worker...");
 let mintBuffer = [];
 let mintTimer = null;
 
+// Counters cho MINT
+let totalMintTicketsQueued = 0; // Tổng số vé đã vào buffer
+let totalMintTicketsMinted = 0; // Tổng số vé đã mint thành công
+
 // --- Buffer cho CHECK-IN ---
 let checkInBuffer = [];
 let checkInTimer = null;
 
+// Counters cho CHECK-IN
+let totalCheckInTicketsQueued = 0; // Tổng vé vào hàng chờ check-in
+let totalCheckInTicketsSynced = 0; // Tổng vé đã sync lên chain
+
+// ==========================================
+// [UPDATE 2] HÀM GỌI WEBHOOK VỀ BACKEND
+// ==========================================
+// orderMappings: [{ orderId: string, tokenIds: string[] }, ...]
+async function syncMintStatusToBackend(orderIds, txHash, orderMappings) {
+  console.log(
+    "🧪 [DEBUG] syncMintStatusToBackend được gọi với:",
+    orderIds,
+    txHash,
+    orderMappings
+  );
+  try {
+    if (!orderIds || orderIds.length === 0) return;
+
+    // Lọc bỏ các giá trị null/undefined nếu có
+    const validOrderIds = orderIds.filter((id) => id);
+
+    if (validOrderIds.length === 0) return;
+
+    // Lọc mapping theo các orderId hợp lệ
+    const validMappings = (orderMappings || []).filter(
+      (m) => m && m.orderId && validOrderIds.includes(m.orderId)
+    );
+
+    const payload = {
+      txHash: txHash,
+      orderIds: validOrderIds,
+      mapping: validMappings,
+      timestamp: new Date().toISOString(),
+    };
+
+    console.log(
+      `📞 Đang gọi Webhook Mint: ${
+        config.backend.url
+      }/webhooks/mint-success với payload: ${JSON.stringify(payload)}`
+    );
+
+    // Gọi API của Repo 1 (Hoàng)
+
+    const response = await axios.post(
+      `${config.backend.url}/webhooks/mint-success`,
+      payload
+    );
+
+    console.log(`✅ Webhook thành công: ${response.data.message || "OK"}`);
+  } catch (error) {
+    // Chỉ log lỗi, không throw để tránh crash Worker
+    // Trong thực tế: Nên lưu vào Queue "Retry" để gọi lại sau
+    console.error(`⚠️ Lỗi gọi Webhook Backend: ${error.message}`);
+    if (error.response) {
+      console.error("Response Data:", error.response.data);
+    }
+  }
+}
 // ==========================================
 // PHẦN 2: LOGIC XẢ BATCH (FLUSH)
 // ==========================================
@@ -42,17 +105,66 @@ async function flushMintBatch() {
 
   const recipients = currentBatch.map((req) => req.recipient);
   const quantities = currentBatch.map((req) => req.quantity);
+  // [UPDATE] Lấy danh sách Order ID để log
+  const orderIds = currentBatch.map((req) => req.orderId);
+
+  const batchTicketCount = quantities.reduce(
+    (sum, q) => sum + Number(q || 0),
+    0
+  );
+  console.log(
+    `🎟️ [MINT] Batch hiện tại: ${batchTicketCount} vé. Tổng vé đang trong buffer (chưa gửi lên chain): ${totalMintTicketsQueued}`
+  );
 
   try {
     // Gọi Blockchain
     const result = await mintBatchOnChain(recipients, quantities);
 
+    const mintedTokenIds = result.tokenIds || [];
+
+    if (mintedTokenIds.length !== batchTicketCount) {
+      console.warn(
+        `⚠️ [MINT] Số tokenId mint được (${mintedTokenIds.length}) không khớp số vé trong batch (${batchTicketCount}).`
+      );
+    }
+
+    // Build mapping: mỗi orderId ánh xạ tới danh sách tokenIds của đơn đó
+    let cursor = 0;
+    const orderMappings = currentBatch.map((req) => {
+      const count = Number(req.quantity || 0);
+      const idsForOrder = mintedTokenIds.slice(cursor, cursor + count);
+      cursor += count;
+      return {
+        orderId: req.orderId,
+        tokenIds: idsForOrder,
+      };
+    });
+
+    console.log(`✅ Batch Mint Thành công! Tx: ${result.txHash}`);
+    console.log(`📦 Order IDs: ${orderIds.join(", ")}`);
+    console.log(
+      `🧾 [MINT] Mapping orderId → tokenIds: ${JSON.stringify(orderMappings)}`
+    );
+
+    totalMintTicketsMinted += batchTicketCount;
+    totalMintTicketsQueued -= batchTicketCount;
+
+    console.log(
+      `📊 [MINT] Tổng đã mint: ${totalMintTicketsMinted} vé, còn trong buffer: ${totalMintTicketsQueued} vé`
+    );
+
+    // 2. [UPDATE 3] Gọi Webhook đồng bộ về Backend
+    // Chạy bất đồng bộ (không await) hoặc await tùy logic bạn muốn chặn hay không
+    // Ở đây mình await để đảm bảo log đẹp
+    await syncMintStatusToBackend(orderIds, result.txHash, orderMappings);
     // Báo thành công cho BullMQ
     currentBatch.forEach((req) => {
       req.resolve({
         status: "success",
         txHash: result.txHash,
         batchSize: currentBatch.length,
+        orderIds: orderIds, // Trả về OrderIDs để sau này dùng
+        mapping: orderMappings,
       });
     });
   } catch (error) {
@@ -82,9 +194,29 @@ async function flushCheckInBatch() {
 
   const tokenIds = currentBatch.map((req) => req.ticketId);
 
+  console.log(
+    `🎟️ [CHECK-IN] Batch hiện tại: ${tokenIds.length} vé. Tổng vé đang trong buffer (check-in): ${totalCheckInTicketsQueued}`
+  );
+
   try {
     // Gọi Blockchain
+    console.log(
+      `🔗 [CHECK-IN] Gửi batch lên Blockchain với ${
+        tokenIds.length
+      } vé: ${tokenIds.join(", ")}`
+    );
     const result = await executeBatchCheckInOnChain(tokenIds);
+
+    console.log(
+      `✅ [CHECK-IN] Blockchain trả kết quả thành công, txHash: ${result.txHash}`
+    );
+
+    totalCheckInTicketsSynced += tokenIds.length;
+    totalCheckInTicketsQueued -= tokenIds.length;
+
+    console.log(
+      `📊 [CHECK-IN] Tổng đã sync: ${totalCheckInTicketsSynced} vé, còn trong buffer: ${totalCheckInTicketsQueued} vé`
+    );
 
     // Báo thành công
     currentBatch.forEach((req) => {
@@ -108,13 +240,18 @@ async function flushCheckInBatch() {
 
 /**
  * Thêm vào hàng chờ MINT
+ * [FIX] Chỉ giữ lại 1 hàm duy nhất có tham số orderId
  */
-function addToMintBuffer(recipient, quantity) {
+function addToMintBuffer(recipient, quantity, orderId) {
   return new Promise((resolve, reject) => {
-    mintBuffer.push({ recipient, quantity, resolve, reject });
+    // [UPDATE] Lưu orderId vào object
+    mintBuffer.push({ recipient, quantity, orderId, resolve, reject });
+
+    const q = Number(quantity || 0);
+    totalMintTicketsQueued += q;
 
     console.log(
-      `📥 [MINT] Buffer: ${mintBuffer.length}/${config.mintStrategy.batchSize}`
+      `📥 [MINT] Buffer: ${mintBuffer.length}/${config.mintStrategy.batchSize} job, tổng vé đang chờ mint: ${totalMintTicketsQueued} (Order: ${orderId})`
     );
 
     if (mintBuffer.length >= config.mintStrategy.batchSize) {
@@ -132,8 +269,10 @@ function addToCheckInBuffer(ticketId) {
   return new Promise((resolve, reject) => {
     checkInBuffer.push({ ticketId, resolve, reject });
 
+    totalCheckInTicketsQueued += 1;
+
     console.log(
-      `📥 [CHECK-IN] Buffer: ${checkInBuffer.length}/${config.checkInStrategy.batchSize}`
+      `📥 [CHECK-IN] Buffer: ${checkInBuffer.length}/${config.checkInStrategy.batchSize} job, tổng vé đang chờ sync: ${totalCheckInTicketsQueued}`
     );
 
     if (checkInBuffer.length >= config.checkInStrategy.batchSize) {
@@ -163,26 +302,32 @@ async function startWorkers() {
   const mintWorker = new Worker(
     config.mintStrategy.queueName,
     async (job) => {
-      const { recipients, quantities } = job.data;
+      // [FIX] Khai báo biến data để không bị lỗi undefined
+      const data = job.data;
 
-      // Hỗ trợ cả 2 định dạng dữ liệu: mảng hoặc đơn lẻ
-      // Nếu Backend gửi mảng, ta tách ra push từng cái
-      if (Array.isArray(recipients)) {
-        // Logic phức tạp hơn nếu nhận mảng, tạm thời giả định Backend gửi đơn lẻ
-        // Hoặc job.data là { recipient: "0x...", quantity: 1 }
-        // Ở đây tôi viết hỗ trợ job đơn lẻ chuẩn Microservices
-        await addToMintBuffer(job.data.recipient, job.data.quantity);
+      // Ưu tiên tìm biến số ít (recipient) và có orderId (Format chuẩn từ Repo 1)
+      if (data.recipient && data.quantity) {
+        await addToMintBuffer(data.recipient, data.quantity, data.orderId);
+      }
+      // Fallback: Hỗ trợ nếu backend gửi mảng (dự phòng)
+      else if (Array.isArray(data.recipients)) {
+        // Logic cũ nếu cần, hoặc bỏ qua
+        console.warn(
+          "⚠️ Nhận được job dạng Array (chưa hỗ trợ OrderID đầy đủ)"
+        );
+        // Giả sử mảng recipients không có orderId tương ứng từng cái
+        for (let i = 0; i < data.recipients.length; i++) {
+          await addToMintBuffer(data.recipients[i], data.quantities[i], null);
+        }
       } else {
-        // Fallback nếu job data khác
-        // Điều chỉnh tùy theo cách test-producer gửi
-        await addToMintBuffer(recipients, quantities);
+        console.error("❌ Job data không hợp lệ:", data);
       }
       return { processed: true };
     },
     {
       connection: config.redis,
-      concurrency: 50, // QUAN TRỌNG: Để tránh Deadlock khi đợi Batch
-      skipConfigValidation: true, //
+      concurrency: 50,
+      skipConfigValidation: true,
     }
   );
 
@@ -191,13 +336,17 @@ async function startWorkers() {
     config.checkInStrategy.queueName,
     async (job) => {
       const { ticketId } = job.data;
+
+      console.log(
+        `📨 [CHECK-IN] Nhận job từ Backend: jobId=${job.id}, ticketId=${ticketId}`
+      );
       await addToCheckInBuffer(ticketId);
       return { processed: true };
     },
     {
       connection: config.redis,
-      concurrency: 50, // QUAN TRỌNG
-      skipConfigValidation: true, //
+      concurrency: 50,
+      skipConfigValidation: true,
     }
   );
 
