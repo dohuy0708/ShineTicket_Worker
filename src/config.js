@@ -54,6 +54,12 @@ const config = {
     queueName: "checkin-queue",
   },
 
+  // 4b. Chiến lược EXPIRE (Backend gửi sẵn danh sách vé cần kiểm tra)
+  // Không cần batch nội bộ, chỉ cần tên queue để BE push job
+  expireStrategy: {
+    queueName: "expire-queue",
+  },
+
   // 5. Cấu hình IPFS (Pinata)
   ipfs: {
     pinataApiKey: process.env.PINATA_API_KEY,

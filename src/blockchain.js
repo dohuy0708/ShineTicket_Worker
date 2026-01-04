@@ -116,6 +116,38 @@ async function executeBatchCheckInOnChain(tokenIds) {
 }
 
 /**
+ * Hàm đọc trạng thái đã check-in của danh sách vé trên Blockchain
+ * @param {number[]|string[]} tokenIds - Danh sách ID vé [1, 2, 5...]
+ * @returns {Promise<boolean[]>} - Mảng bool tương ứng: true = đã check-in, false = chưa check-in
+ */
+async function getBatchTicketStatusOnChain(tokenIds) {
+  try {
+    if (!tokenIds || tokenIds.length === 0) return [];
+
+    console.log(
+      `🔍 [STATUS] Đang đọc trạng thái ${tokenIds.length} vé trên Blockchain...`
+    );
+
+    // Ethers v6 có thể nhận string/number/BigInt, để rõ ràng ta cast về BigInt
+    const normalizedIds = tokenIds.map((id) => BigInt(id));
+
+    const statuses = await contract.getBatchTicketStatus(normalizedIds);
+
+    // statuses là mảng boolean (ethers v6 giữ nguyên kiểu bool[])
+    console.log(
+      `✅ [STATUS] Đã lấy trạng thái vé: ${statuses
+        .map((s, idx) => `${tokenIds[idx]}=${s ? "checked-in" : "not-used"}`)
+        .join(", ")}`
+    );
+
+    return statuses;
+  } catch (error) {
+    console.error("❌ Lỗi đọc trạng thái vé trên Blockchain:", error.message);
+    throw error;
+  }
+}
+
+/**
  * Hàm kiểm tra kết nối khi khởi động Worker
  */
 async function verifyConnection() {
@@ -145,4 +177,9 @@ async function verifyConnection() {
   }
 }
 
-export { mintBatchOnChain, executeBatchCheckInOnChain, verifyConnection };
+export {
+  mintBatchOnChain,
+  executeBatchCheckInOnChain,
+  getBatchTicketStatusOnChain,
+  verifyConnection,
+};

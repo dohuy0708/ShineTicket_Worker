@@ -4,6 +4,7 @@ import axios from "axios";
 import {
   mintBatchOnChain,
   executeBatchCheckInOnChain,
+  getBatchTicketStatusOnChain,
   verifyConnection,
 } from "./blockchain.js";
 
@@ -28,6 +29,8 @@ let checkInTimer = null;
 // Counters cho CHECK-IN
 let totalCheckInTicketsQueued = 0; // Tổng vé vào hàng chờ check-in
 let totalCheckInTicketsSynced = 0; // Tổng vé đã sync lên chain
+
+// --- Không dùng buffer cho EXPIRE, vì BE sẽ gửi sẵn list token ---
 
 // ==========================================
 // [UPDATE 2] HÀM GỌI WEBHOOK VỀ BACKEND
@@ -350,6 +353,130 @@ async function startWorkers() {
     }
   );
 
+  // 4. Worker AUTO CHECK-IN (dùng giống batch check-in)
+  // BE sẽ push job với dạng: { ticketIds: [1,2,3,...], showId?: string }
+  // Điều kiện "đã qua ngày diễn" (nếu cần) sẽ do BE kiểm tra trước khi đẩy job.
+  const expireWorker = new Worker(
+    config.expireStrategy.queueName,
+    async (job) => {
+      const { ticketIds } = job.data || {};
+
+      if (!Array.isArray(ticketIds) || ticketIds.length === 0) {
+        console.warn(
+          `⚠️ [AUTO-CHECKIN] Job ${job.id} không có danh sách ticketIds hợp lệ.`,
+          job.data
+        );
+        return { processed: false };
+      }
+
+      console.log(
+        `📨 [AUTO-CHECKIN] Nhận job: jobId=${job.id}, tickets=${ticketIds.join(
+          ","
+        )}`
+      );
+
+      // 1. Đọc trạng thái vé trên Blockchain (đã check-in hay chưa)
+      const statuses = await getBatchTicketStatusOnChain(ticketIds);
+
+      if (!statuses || statuses.length !== ticketIds.length) {
+        console.warn(
+          `⚠️ [AUTO-CHECKIN] Số lượng trạng thái trả về không khớp danh sách tokenIds.`
+        );
+      }
+
+      // 2. Lọc ra các vé CHƯA check-in (false) để thực hiện batch check-in on-chain
+      const needCheckInTicketIds = [];
+      for (let i = 0; i < ticketIds.length; i++) {
+        const used = statuses[i]; // true = đã check-in, false = chưa dùng
+        if (!used) {
+          needCheckInTicketIds.push(ticketIds[i]);
+        }
+      }
+
+      if (needCheckInTicketIds.length === 0) {
+        console.log(
+          `✅ [AUTO-CHECKIN] Tất cả vé trong job ${job.id} đều đã check-in trên chain, không cần thực hiện batch check-in.`
+        );
+        return { processed: true, checkedInCount: 0 };
+      }
+
+      console.log(
+        `✅ [AUTO-CHECKIN] Có ${
+          needCheckInTicketIds.length
+        } vé chưa check-in, sẽ thực hiện batch check-in on-chain: ${needCheckInTicketIds.join(
+          ","
+        )}`
+      );
+
+      // 3. Thực hiện batch check-in on-chain cho các vé chưa dùng
+      let txHash = null;
+      try {
+        const result = await executeBatchCheckInOnChain(needCheckInTicketIds);
+        txHash = result.txHash;
+        console.log(
+          `🏁 [AUTO-CHECKIN] Batch check-in thành công, txHash=${txHash}`
+        );
+      } catch (error) {
+        console.error(
+          `❌ [AUTO-CHECKIN] Lỗi khi thực hiện batch check-in on-chain: ${error.message}`
+        );
+        // Cho phép BullMQ retry theo config mặc định
+        throw error;
+      }
+
+      // 4. Gọi webhook về Backend để update status = checkin trong DB
+      try {
+        const payload = {
+          ticketIds: needCheckInTicketIds,
+          // Có thể truyền thêm showId nếu BE gửi trong job.data
+          showId: job.data.showId,
+          // Đánh dấu thời điểm worker xử lý
+          processedAt: new Date().toISOString(),
+          txHash,
+        };
+
+        console.log(
+          `📞 [AUTO-CHECKIN] Gọi webhook: ${
+            config.backend.url
+          }/webhooks/tickets-auto-checkin với payload: ${JSON.stringify(
+            payload
+          )}`
+        );
+
+        const resp = await axios.post(
+          `${config.backend.url}/webhooks/tickets-auto-checkin`,
+          payload
+        );
+
+        console.log(
+          `✅ [AUTO-CHECKIN] BE xác nhận cập nhật status checkin thành công: ${
+            resp.data?.message || "OK"
+          }`
+        );
+      } catch (error) {
+        console.error(
+          `❌ [AUTO-CHECKIN] Lỗi khi gọi webhook cập nhật status checkin: ${error.message}`
+        );
+        if (error.response) {
+          console.error("Response Data:", error.response.data);
+        }
+        // Cho phép BullMQ retry theo config mặc định
+        throw error;
+      }
+
+      return {
+        processed: true,
+        checkedInCount: needCheckInTicketIds.length,
+        txHash,
+      };
+    },
+    {
+      connection: config.redis,
+      concurrency: 20,
+      skipConfigValidation: true,
+    }
+  );
+
   // Log trạng thái
   mintWorker.on("ready", () =>
     console.log(`✅ Mint Worker Ready: ${config.mintStrategy.queueName}`)
@@ -363,6 +490,13 @@ async function startWorkers() {
   );
   checkInWorker.on("failed", (job, err) =>
     console.error(`❌ Check-in Job ${job.id} Failed: ${err.message}`)
+  );
+
+  expireWorker.on("ready", () =>
+    console.log(`✅ Expire Worker Ready: ${config.expireStrategy.queueName}`)
+  );
+  expireWorker.on("failed", (job, err) =>
+    console.error(`❌ Expire Job ${job.id} Failed: ${err.message}`)
   );
 }
 

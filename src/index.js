@@ -1,7 +1,10 @@
 import { verifyConnection } from "./blockchain.js";
 
-// Import file worker để kích hoạt logic lắng nghe
+// Import file worker để kích hoạt logic xử lý hàng đợi
 import "./worker.js";
+
+// Import listener để lắng nghe sự kiện Transfer trên Blockchain
+import "./listener.js";
 
 async function main() {
   console.log("--- SHINE TICKET WORKER SERVICE ---");
