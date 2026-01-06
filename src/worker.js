@@ -1,6 +1,7 @@
 import { Worker } from "bullmq";
 import config from "./config.js";
 import axios from "axios";
+import express from "express";
 import {
   mintBatchOnChain,
   executeBatchCheckInOnChain,
@@ -508,3 +509,15 @@ process.on("SIGINT", async () => {
 
 // CHẠY
 startWorkers();
+
+// --- HEALTH CHECK SERVER (CHO RENDER / MONITOR) ---
+const app = express();
+const port = process.env.PORT || 3000;
+
+app.get("/", (req, res) => {
+  res.send("Worker is running!");
+});
+
+app.listen(port, () => {
+  console.log(`Health check server listening on port ${port}`);
+});

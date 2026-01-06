@@ -1,4 +1,4 @@
-// scripts/setBaseURI.js
+// scripts/setBaseURI.cjs
 const { ethers } = require("ethers");
 require("dotenv").config();
 
@@ -8,9 +8,8 @@ async function main() {
   const wallet = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
 
   // 2. Kết nối Contract
-  // (Cần có ABI của contract, file JSON artifacts)
-  const contractABI =
-    require("../artifacts/contracts/ShineTicket.sol/ShineTicket.json").abi;
+  // Dùng ABI từ thư mục abi (đã build sẵn)
+  const contractABI = require("../abi/ShineTicket.json").abi;
   const contract = new ethers.Contract(
     process.env.CONTRACT_ADDRESS,
     contractABI,
