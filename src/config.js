@@ -38,6 +38,7 @@ const config = {
     rpcUrl: process.env.RPC_URL,
     privateKey: process.env.PRIVATE_KEY,
     contractAddress: process.env.CONTRACT_ADDRESS,
+    usdtAddress: process.env.USDT_ADDRESS,
   },
 
   // 3. Chiến lược MINT (Ưu tiên tốc độ UX)
@@ -68,6 +69,8 @@ const config = {
   // 6. Cấu hình Backend API
   backend: {
     url: process.env.BACKEND_URL || "http://localhost:3001/api",
+    beApiUrl: process.env.BE_API_URL,
+    internalWebhookSecret: process.env.INTERNAL_WEBHOOK_SECRET,
   },
 };
 
@@ -78,7 +81,7 @@ if (
   !config.blockchain.rpcUrl
 ) {
   console.error(
-    "❌ LỖI CRITICAL: Thiếu biến môi trường Blockchain (RPC_URL, PRIVATE_KEY, hoặc CONTRACT_ADDRESS) trong file .env"
+    "❌ LỖI CRITICAL: Thiếu biến môi trường Blockchain (RPC_URL, PRIVATE_KEY, hoặc CONTRACT_ADDRESS) trong file .env",
   );
   process.exit(1);
 }

@@ -4,6 +4,7 @@ import { createRequire } from "module";
 
 const require = createRequire(import.meta.url);
 const ticketArtifact = require("../abi/ShineTicket.json");
+const usdtArtifact = require("../abi/MockUSDT.json");
 
 // --- 1. KHỞI TẠO KẾT NỐI ---
 const provider = new ethers.JsonRpcProvider(config.blockchain.rpcUrl);
@@ -11,85 +12,77 @@ const wallet = new ethers.Wallet(config.blockchain.privateKey, provider);
 const contract = new ethers.Contract(
   config.blockchain.contractAddress,
   ticketArtifact.abi,
-  wallet
+  wallet,
 );
 const ticketInterface = new ethers.Interface(ticketArtifact.abi);
 
+const usdtContract = new ethers.Contract(
+  config.blockchain.usdtAddress,
+  usdtArtifact.abi,
+  wallet,
+);
+
 /**
- * Hàm gọi Smart Contract để Mint Batch (Gom nhiều người)
- * @param {string[]} recipients - Danh sách địa chỉ ví
- * @param {number[]} quantities - Danh sách số lượng
+ * INIT (Khởi động)
+ * Kiểm tra allowance và duyệt USDT cho Smart Contract
  */
-async function mintBatchOnChain(recipients, quantities) {
+async function initUSDTApproval() {
+  console.log("[WORKER] Đang kiểm tra Allowance USDT...");
   try {
-    console.log(`🔗 [MINT] Đang gửi giao dịch cho ${recipients.length} ví...`);
-
-    // Gọi hàm mintBatchUsers của Smart Contract
-    const tx = await contract.mintBatchUsers(recipients, quantities);
-
-    console.log(`⏳ Tx Hash: ${tx.hash}`);
-    console.log(`   Đang đợi xác nhận...`);
-
-    const receipt = await tx.wait(1);
-
-    // Thu thập danh sách tokenId được mint trong transaction này
-    const mintedTokenIds = [];
-
-    for (const log of receipt.logs) {
-      let parsed = null;
-      try {
-        parsed = ticketInterface.parseLog(log);
-      } catch {
-        // Log không thuộc contract này -> bỏ qua
-      }
-
-      if (!parsed || !parsed.name || !parsed.args) continue;
-
-      if (parsed.name === "Transfer") {
-        const from = parsed.args.from;
-        const tokenId = parsed.args.tokenId;
-        if (from && from.toLowerCase() === ethers.ZeroAddress.toLowerCase()) {
-          mintedTokenIds.push(tokenId.toString());
-        }
-      } else if (parsed.name === "ConsecutiveTransfer") {
-        const from = parsed.args.from;
-        if (from && from.toLowerCase() === ethers.ZeroAddress.toLowerCase()) {
-          let fromId = parsed.args.fromTokenId;
-          const toId = parsed.args.toTokenId;
-          // fromId, toId là BigInt trong ethers v6
-          for (let id = fromId; id <= toId; id = id + 1n) {
-            mintedTokenIds.push(id.toString());
-          }
-        }
-      }
-    }
-
-    console.log(
-      `✅ Mint thành công! Block: ${receipt.blockNumber}, Gas Used: ${
-        receipt.gasUsed
-      }, Token IDs: ${mintedTokenIds.join(", ")}`
+    const maxApproval = ethers.MaxUint256;
+    const allowance = await usdtContract.allowance(
+      wallet.address,
+      config.blockchain.contractAddress,
     );
-    return {
-      success: true,
-      txHash: tx.hash,
-      blockNumber: receipt.blockNumber,
-      tokenIds: mintedTokenIds,
-    };
+
+    if (allowance < ethers.parseUnits("1000", 6)) {
+      console.log(
+        "[WORKER] Tiến hành cấp quyền (Approve) USDT cho Smart Contract...",
+      );
+      const tx = await usdtContract.approve(
+        config.blockchain.contractAddress,
+        maxApproval,
+      );
+      await tx.wait();
+      console.log("[WORKER] Approve USDT thành công!");
+    } else {
+      console.log("[WORKER] USDT Allowance đã đủ, sẵn sàng chạy.");
+    }
   } catch (error) {
-    console.error("❌ Lỗi Mint:", error.message);
+    console.error("❌ Lỗi khi kiểm tra hoặc approve USDT:", error.message);
+  }
+}
+
+/**
+ * Đợi 1 giao dịch được xác nhận (dùng cho Kịch bản A)
+ */
+async function waitForTransaction(txHash) {
+  // Timeout tự định nghĩa hoặc dùng mặc định của ethers
+  return await provider.waitForTransaction(txHash, 1, 60000);
+}
+
+/**
+ * Mua vé hộ khách (VND) (Kịch bản B)
+ */
+async function relayerBuyTicket(eventId, quantity, buyerAddress) {
+  try {
+    const tx = await contract.relayerBuyTicket(eventId, quantity, buyerAddress);
+    return tx;
+  } catch (error) {
+    console.error(`❌ Lỗi gọi relayerBuyTicket trên SC:`, error.message);
     throw error;
   }
 }
 
 /**
- * [ĐÃ SỬA] Hàm gọi Smart Contract để Check-in HÀNG LOẠT
+ * Hàm gọi Smart Contract để Check-in HÀNG LOẠT
  * Thay vì tokenId lẻ, ta nhận vào mảng tokenIds
  * @param {number[]} tokenIds - Danh sách ID vé [1, 2, 5...]
  */
 async function executeBatchCheckInOnChain(tokenIds) {
   try {
     console.log(
-      `🔗 [CHECK-IN] Đang đồng bộ ${tokenIds.length} vé lên Blockchain...`
+      `🔗 [CHECK-IN] Đang đồng bộ ${tokenIds.length} vé lên Blockchain...`,
     );
 
     // Gọi hàm batchCheckIn (lưu ý tên hàm trong Contract V2)
@@ -125,7 +118,7 @@ async function getBatchTicketStatusOnChain(tokenIds) {
     if (!tokenIds || tokenIds.length === 0) return [];
 
     console.log(
-      `🔍 [STATUS] Đang đọc trạng thái ${tokenIds.length} vé trên Blockchain...`
+      `🔍 [STATUS] Đang đọc trạng thái ${tokenIds.length} vé trên Blockchain...`,
     );
 
     // Ethers v6 có thể nhận string/number/BigInt, để rõ ràng ta cast về BigInt
@@ -137,7 +130,7 @@ async function getBatchTicketStatusOnChain(tokenIds) {
     console.log(
       `✅ [STATUS] Đã lấy trạng thái vé: ${statuses
         .map((s, idx) => `${tokenIds[idx]}=${s ? "checked-in" : "not-used"}`)
-        .join(", ")}`
+        .join(", ")}`,
     );
 
     return statuses;
@@ -154,7 +147,7 @@ async function verifyConnection() {
   try {
     const network = await provider.getNetwork();
     console.log(
-      `🌐 Đã kết nối mạng: ${network.name} (Chain ID: ${network.chainId})`
+      `🌐 Đã kết nối mạng: ${network.name} (Chain ID: ${network.chainId})`,
     );
 
     const balance = await provider.getBalance(wallet.address);
@@ -165,7 +158,7 @@ async function verifyConnection() {
 
     if (owner.toLowerCase() !== wallet.address.toLowerCase()) {
       console.warn(
-        "⚠️ CẢNH BÁO: Ví Worker KHÔNG PHẢI là chủ Contract! Lệnh Mint/Check-in sẽ thất bại."
+        "⚠️ CẢNH BÁO: Ví Worker KHÔNG PHẢI là chủ Contract! Lệnh Mint/Check-in sẽ thất bại.",
       );
     } else {
       console.log("👑 Quyền Admin: OK");
@@ -178,7 +171,10 @@ async function verifyConnection() {
 }
 
 export {
-  mintBatchOnChain,
+  initUSDTApproval,
+  waitForTransaction,
+  relayerBuyTicket,
+  ticketInterface,
   executeBatchCheckInOnChain,
   getBatchTicketStatusOnChain,
   verifyConnection,
