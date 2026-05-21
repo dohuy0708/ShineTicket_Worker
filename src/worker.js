@@ -1,4 +1,4 @@
-import { Worker } from "bullmq";
+import { Queue, Worker } from "bullmq";
 import config from "./config.js";
 import axios from "axios";
 import express from "express";
@@ -12,6 +12,7 @@ import {
   getBatchTicketStatusOnChain,
   verifyConnection,
 } from "./blockchain.js";
+import { isRelayerFatalFailure, processRelayerBuyJob } from "./relayer.js";
 
 console.log("🚀 Đang khởi động ShineTicket Worker...");
 
@@ -129,6 +130,67 @@ async function startWorkers() {
 
   // 1.1 Kiểm tra cấp quyền USDT cho Smart Contract
   await initUSDTApproval();
+
+  const relayerDlqQueue = new Queue(config.relayerStrategy.dlqQueueName, {
+    connection: config.redis,
+    skipConfigValidation: true,
+  });
+
+  const relayerBuyWorker = new Worker(
+    config.relayerStrategy.queueName,
+    processRelayerBuyJob,
+    {
+      connection: config.redis,
+      concurrency: config.relayerStrategy.concurrency,
+      skipConfigValidation: true,
+    },
+  );
+
+  relayerBuyWorker.on("ready", () =>
+    console.log(
+      `✅ Relayer Buy Worker Ready: ${config.relayerStrategy.queueName}`,
+    ),
+  );
+
+  relayerBuyWorker.on("failed", async (job, err) => {
+    const maxAttempts = job?.opts?.attempts || config.relayerStrategy.attempts;
+    const isFinalFailure =
+      isRelayerFatalFailure(err) || job.attemptsMade >= maxAttempts;
+
+    console.error(
+      `❌ [RELAYER] Job ${job?.id} failed (attemptsMade=${job?.attemptsMade}/${maxAttempts}): ${err.message}`,
+    );
+
+    if (!isFinalFailure) {
+      return;
+    }
+
+    try {
+      await relayerDlqQueue.add(
+        "relayer-buy-ticket-job-dlq",
+        {
+          jobId: job?.id,
+          originalJobName: job?.name,
+          payload: job?.data,
+          failedReason: err.message,
+          attemptsMade: job?.attemptsMade,
+          failedAt: new Date().toISOString(),
+        },
+        {
+          removeOnComplete: true,
+          removeOnFail: false,
+        },
+      );
+
+      console.error(
+        `🚨 [RELAYER][DLQ] Job ${job?.id} được đẩy sang ${config.relayerStrategy.dlqQueueName} để xử lý thủ công.`,
+      );
+    } catch (dlqError) {
+      console.error(
+        `❌ [RELAYER][DLQ] Không đẩy được job ${job?.id} sang DLQ: ${dlqError.message}`,
+      );
+    }
+  });
 
   // 2. Kịch bản A: Giám sát tạo sự kiện (Watcher)
   const verifyEventMintWorker = new Worker(

@@ -39,6 +39,7 @@ const config = {
     privateKey: process.env.PRIVATE_KEY,
     contractAddress: process.env.CONTRACT_ADDRESS,
     usdtAddress: process.env.USDT_ADDRESS,
+    usdtDecimals: parseInt(process.env.USDT_DECIMALS) || 6,
   },
 
   // 3. Chiến lược MINT (Ưu tiên tốc độ UX)
@@ -69,6 +70,29 @@ const config = {
   // 6. Cấu hình Backend API
   backend: {
     url: process.env.BACKEND_URL || "http://localhost:3001/api",
+    beApiUrl: process.env.BE_API_URL,
+    internalWebhookSecret: process.env.INTERNAL_WEBHOOK_SECRET,
+  },
+
+  // 7. Cấu hình Relayer Buy Worker
+  relayerStrategy: {
+    queueName: process.env.RELAYER_QUEUE_NAME || "relayer-buy-queue",
+    dlqQueueName: process.env.RELAYER_DLQ_QUEUE_NAME || "relayer-buy-dlq",
+    attempts: parseInt(process.env.RELAYER_ATTEMPTS) || 5,
+    backoffDelay: parseInt(process.env.RELAYER_BACKOFF_DELAY) || 5000,
+    concurrency: parseInt(process.env.RELAYER_CONCURRENCY) || 1,
+  },
+
+  relayerApi: {
+    orderLookupPath:
+      process.env.RELAYER_ORDER_LOOKUP_PATH || "/api/v1/internal/orders/",
+    resultPath:
+      process.env.RELAYER_RESULT_PATH ||
+      "/api/v1/webhooks/internal/relayer-buy-result",
+  },
+
+  // Alias để giữ tương thích với các file worker cũ đang dùng config.webhook
+  webhook: {
     beApiUrl: process.env.BE_API_URL,
     internalWebhookSecret: process.env.INTERNAL_WEBHOOK_SECRET,
   },

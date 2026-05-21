@@ -74,6 +74,85 @@ async function relayerBuyTicket(eventId, quantity, buyerAddress) {
   }
 }
 
+async function executeRelayerPurchase(methodName, callArgs) {
+  if (typeof contract[methodName] !== "function") {
+    throw new Error(`Contract không có method ${methodName}`);
+  }
+
+  try {
+    const tx = await contract[methodName](...callArgs);
+    return tx;
+  } catch (error) {
+    console.error(`❌ Lỗi gọi ${methodName} trên SC:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Kiểm tra pre-flight cho relayer buy: đủ gas và đủ USDT hay chưa.
+ */
+async function getRelayerPreflightSnapshot(
+  methodName,
+  callArgs,
+  totalPrice,
+) {
+  if (typeof contract[methodName] !== "function") {
+    throw new Error(`Contract không có method ${methodName}`);
+  }
+
+  const gasEstimate = await contract[methodName].estimateGas(...callArgs);
+
+  const feeData = await provider.getFeeData();
+  const gasPrice = feeData.maxFeePerGas ?? feeData.gasPrice;
+
+  if (!gasPrice) {
+    throw new Error("Không lấy được fee data của mạng để kiểm tra gas");
+  }
+
+  const nativeBalance = await provider.getBalance(wallet.address);
+  const usdtBalance = await usdtContract.balanceOf(wallet.address);
+  const requiredUsdt = BigInt(totalPrice);
+  const estimatedGasCost = gasEstimate * gasPrice;
+
+  return {
+    nativeBalance,
+    usdtBalance,
+    requiredUsdt,
+    gasEstimate,
+    gasPrice,
+    estimatedGasCost,
+    enoughNative: nativeBalance >= estimatedGasCost,
+    enoughUsdt: usdtBalance >= requiredUsdt,
+  };
+}
+
+/**
+ * Bóc tách tokenId từ receipt của giao dịch mint.
+ */
+function parseMintedTokenIdsFromReceipt(receipt) {
+  const mintedTokenIds = [];
+
+  if (!receipt?.logs?.length) {
+    return mintedTokenIds;
+  }
+
+  for (const log of receipt.logs) {
+    try {
+      const parsedLog = ticketInterface.parseLog(log);
+      if (
+        parsedLog?.name === "Transfer" &&
+        parsedLog.args?.from?.toLowerCase() === ethers.ZeroAddress.toLowerCase()
+      ) {
+        mintedTokenIds.push(parsedLog.args.tokenId.toString());
+      }
+    } catch (error) {
+      continue;
+    }
+  }
+
+  return mintedTokenIds;
+}
+
 /**
  * Hàm gọi Smart Contract để Check-in HÀNG LOẠT
  * Thay vì tokenId lẻ, ta nhận vào mảng tokenIds
@@ -170,10 +249,24 @@ async function verifyConnection() {
   }
 }
 
+async function getBlockchainContext() {
+  const network = await provider.getNetwork();
+
+  return {
+    chainId: Number(network.chainId),
+    relayerAddress: wallet.address,
+    contractAddress: config.blockchain.contractAddress,
+  };
+}
+
 export {
   initUSDTApproval,
   waitForTransaction,
   relayerBuyTicket,
+  executeRelayerPurchase,
+  getRelayerPreflightSnapshot,
+  parseMintedTokenIdsFromReceipt,
+  getBlockchainContext,
   ticketInterface,
   executeBatchCheckInOnChain,
   getBatchTicketStatusOnChain,
