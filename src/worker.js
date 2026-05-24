@@ -238,68 +238,6 @@ async function startWorkers() {
     },
   );
 
-  // 3. Kịch bản B: Thực thi đúc vé mua bằng VND (Executer)
-  const mintVndWorker = new Worker(
-    "mintVndQueue",
-    async (job) => {
-      const { orderId, eventId, quantity, buyerAddress } = job.data;
-      console.log(
-        `[EXECUTER] Bắt đầu mua vé hộ đơn hàng ${orderId} (VND) - Số lượng: ${quantity}`,
-      );
-
-      try {
-        const tx = await relayerBuyTicket(eventId, quantity, buyerAddress);
-        console.log(`[EXECUTER] Đã gửi tx: ${tx.hash}. Đang chờ đào...`);
-
-        const receipt = await tx.wait();
-
-        let mintedTokenIds = [];
-        for (const log of receipt.logs) {
-          try {
-            const parsedLog = ticketInterface.parseLog(log);
-            if (
-              parsedLog.name === "Transfer" &&
-              parsedLog.args.from.toLowerCase() ===
-                ethers.ZeroAddress.toLowerCase()
-            ) {
-              mintedTokenIds.push(parsedLog.args.tokenId.toString());
-            }
-          } catch (e) {
-            continue;
-          }
-        }
-
-        await axios.post(
-          `${config.webhook.beApiUrl}/api/v1/webhooks/internal/ticket-mint-result`,
-          {
-            orderId,
-            txHash: receipt.hash,
-            status: "SUCCESS",
-            tokenIds: mintedTokenIds,
-          },
-          {
-            headers: {
-              "x-webhook-secret": config.webhook.internalWebhookSecret,
-            },
-          },
-        );
-
-        console.log(
-          `[EXECUTER] Hoàn thành đơn ${orderId}. Các vé đã đúc: ${mintedTokenIds.join(", ")}`,
-        );
-        return mintedTokenIds;
-      } catch (error) {
-        console.error(`[EXECUTER] Lỗi đúc vé đơn ${orderId}:`, error.message);
-        throw error;
-      }
-    },
-    {
-      connection: config.redis,
-      concurrency: 5,
-      skipConfigValidation: true,
-    },
-  );
-
   // 3. Worker CHECK-IN
   const checkInWorker = new Worker(
     config.checkInStrategy.queueName,
@@ -444,11 +382,13 @@ async function startWorkers() {
   );
 
   // Log trạng thái
-  mintWorker.on("ready", () =>
-    console.log(`✅ Mint Worker Ready: ${config.mintStrategy.queueName}`),
+  relayerBuyWorker.on("ready", () =>
+    console.log(
+      `✅ Relayer Buy Worker Ready: ${config.relayerStrategy.queueName}`,
+    ),
   );
-  mintWorker.on("failed", (job, err) =>
-    console.error(`❌ Mint Job ${job.id} Failed: ${err.message}`),
+  relayerBuyWorker.on("failed", (job, err) =>
+    console.error(`❌ Relayer Buy Job ${job.id} Failed: ${err.message}`),
   );
 
   checkInWorker.on("ready", () =>

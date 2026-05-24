@@ -89,13 +89,9 @@ async function executeRelayerPurchase(methodName, callArgs) {
 }
 
 /**
- * Kiểm tra pre-flight cho relayer buy: đủ gas và đủ USDT hay chưa.
+ * Kiểm tra pre-flight cho relayer buy: đủ gas, và nếu có totalPrice thì kiểm tra đủ USDT.
  */
-async function getRelayerPreflightSnapshot(
-  methodName,
-  callArgs,
-  totalPrice,
-) {
+async function getRelayerPreflightSnapshot(methodName, callArgs, totalPrice) {
   if (typeof contract[methodName] !== "function") {
     throw new Error(`Contract không có method ${methodName}`);
   }
@@ -111,18 +107,21 @@ async function getRelayerPreflightSnapshot(
 
   const nativeBalance = await provider.getBalance(wallet.address);
   const usdtBalance = await usdtContract.balanceOf(wallet.address);
-  const requiredUsdt = BigInt(totalPrice);
+  const hasRequiredUsdt =
+    totalPrice !== undefined && totalPrice !== null && totalPrice !== "";
+  const requiredUsdt = hasRequiredUsdt ? BigInt(totalPrice) : null;
   const estimatedGasCost = gasEstimate * gasPrice;
 
   return {
     nativeBalance,
     usdtBalance,
+    hasRequiredUsdt,
     requiredUsdt,
     gasEstimate,
     gasPrice,
     estimatedGasCost,
     enoughNative: nativeBalance >= estimatedGasCost,
-    enoughUsdt: usdtBalance >= requiredUsdt,
+    enoughUsdt: requiredUsdt === null ? true : usdtBalance >= requiredUsdt,
   };
 }
 
@@ -231,18 +230,44 @@ async function verifyConnection() {
 
     const balance = await provider.getBalance(wallet.address);
     console.log(`💰 Số dư ví Worker: ${ethers.formatEther(balance)} POL/MATIC`);
+    // Một số phiên bản contract dùng Ownable (owner()), một số khác dùng AccessControl (DEFAULT_ADMIN_ROLE + hasRole)
+    try {
+      if (typeof contract.owner === "function") {
+        const owner = await contract.owner();
+        if (owner.toLowerCase() !== wallet.address.toLowerCase()) {
+          console.warn(
+            "⚠️ CẢNH BÁO: Ví Worker KHÔNG PHẢI là chủ Contract! Một vài thao tác có thể bị từ chối.",
+          );
+        } else {
+          console.log("👑 Quyền Admin: OK (owner)");
+        }
+      } else if (
+        typeof contract.DEFAULT_ADMIN_ROLE === "function" &&
+        typeof contract.hasRole === "function"
+      ) {
+        const adminRole = await contract.DEFAULT_ADMIN_ROLE();
+        const isAdmin = await contract.hasRole(adminRole, wallet.address);
+        if (!isAdmin) {
+          console.warn(
+            "⚠️ CẢNH BÁO: Ví Worker KHÔNG có DEFAULT_ADMIN_ROLE trên Contract! Một vài thao tác có thể bị từ chối.",
+          );
+        } else {
+          console.log("👑 Quyền Admin: OK (DEFAULT_ADMIN_ROLE)");
+        }
+      } else {
+        console.warn(
+          "⚠️ Không tìm thấy method kiểm tra quyền trên ABI (owner/hasRole). Bỏ qua kiểm tra quyền và tiếp tục khởi động.",
+        );
+      }
 
-    // Hàm owner() có sẵn do kế thừa Ownable
-    const owner = await contract.owner();
-
-    if (owner.toLowerCase() !== wallet.address.toLowerCase()) {
-      console.warn(
-        "⚠️ CẢNH BÁO: Ví Worker KHÔNG PHẢI là chủ Contract! Lệnh Mint/Check-in sẽ thất bại.",
+      return true;
+    } catch (innerErr) {
+      console.error(
+        "❌ Lỗi khi kiểm tra quyền trên Contract:",
+        innerErr.message,
       );
-    } else {
-      console.log("👑 Quyền Admin: OK");
+      return false;
     }
-    return true;
   } catch (error) {
     console.error("❌ Lỗi kết nối Blockchain:", error.message);
     return false;

@@ -16,13 +16,14 @@ async function startListener() {
   const contract = new ethers.Contract(
     config.blockchain.contractAddress,
     ticketArtifact.abi,
-    provider
+    provider,
   );
 
   // Lắng nghe sự kiện Transfer (theo chuẩn ERC721)
   // Sự kiện: Transfer(address indexed from, address indexed to, uint256 indexed tokenId)
   contract.on("Transfer", async (from, to, tokenId, event) => {
     console.log(`🚨 PHÁT HIỆN GIAO DỊCH: Vé #${tokenId} từ ${from} -> ${to}`);
+    console.log(`👛 Ví nhận vé: ${to}`);
 
     // Bỏ qua trường hợp Mint (from = 0x0) vì Worker đã xử lý rồi
     if (from === ethers.ZeroAddress) return;
@@ -40,8 +41,8 @@ async function startListener() {
 
       console.log(
         `📞 [LISTENER] Gọi webhook transfer: http://localhost:3000/api/webhook/transfer với payload: ${JSON.stringify(
-          payload
-        )}`
+          payload,
+        )}`,
       );
 
       await axios.post("http://localhost:3000/api/webhook/transfer", payload);

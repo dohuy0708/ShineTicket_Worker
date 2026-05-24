@@ -29,17 +29,34 @@ function joinUrl(baseUrl, path) {
 }
 
 function resolveCallbackUrl(callbackUrl) {
-  if (!callbackUrl) {
+  const callbackPath = config.relayerApi?.resultPath || callbackUrl;
+
+  if (!callbackPath) {
     throw new UnrecoverableError(
       "Thiếu callbackUrl trong payload relayer-buy-job",
     );
   }
 
-  if (isAbsoluteUrl(callbackUrl)) {
-    return callbackUrl;
+  if (isAbsoluteUrl(callbackPath)) {
+    return callbackPath;
   }
 
-  return joinUrl(config.backend.beApiUrl || config.backend.url, callbackUrl);
+  return joinUrl(config.backend.beApiUrl || config.backend.url, callbackPath);
+}
+
+function resolveCallbackSecret(callbackSecret) {
+  const resolvedSecret =
+    callbackSecret ||
+    config.backend?.internalWebhookSecret ||
+    config.webhook?.internalWebhookSecret;
+
+  if (!resolvedSecret) {
+    throw new UnrecoverableError(
+      "Thiếu callbackSecret trong payload relayer-buy-job và config worker",
+    );
+  }
+
+  return resolvedSecret;
 }
 
 function normalizeQuantity(value) {
@@ -52,7 +69,9 @@ function normalizeQuantity(value) {
 
 function normalizeIntegerArray(values, fieldName) {
   if (!Array.isArray(values) || values.length === 0) {
-    throw new UnrecoverableError(`Thiếu ${fieldName} hợp lệ trong payload relayer-buy-job`);
+    throw new UnrecoverableError(
+      `Thiếu ${fieldName} hợp lệ trong payload relayer-buy-job`,
+    );
   }
 
   return values.map((value) => {
@@ -66,7 +85,7 @@ function normalizeIntegerArray(values, fieldName) {
 
 function normalizeTotalPrice(value) {
   if (value === undefined || value === null || value === "") {
-    throw new UnrecoverableError("Thiếu totalPrice của đơn hàng");
+    return undefined;
   }
 
   try {
@@ -120,54 +139,67 @@ function resolveJobPayload(jobData = {}) {
 
   const orderId = jobData.orderId;
   const orderCode = jobData.orderCode;
-  const eventIds = jobData.eventIds || contractArgs.eventIds || [jobData.eventId ?? jobData.onChainId];
+  const eventIds = jobData.eventIds ||
+    contractArgs.eventIds || [jobData.eventId ?? jobData.onChainId];
   const showId = jobData.showId;
-  const quantities = jobData.quantities || contractArgs.quantities || [normalizeQuantity(jobData.quantity)];
+  const quantities = jobData.quantities ||
+    contractArgs.quantities || [normalizeQuantity(jobData.quantity)];
   const buyerAddress = jobData.buyerAddress || contractArgs.buyerAddress;
   const recipient = jobData.recipient;
   const price = jobData.price;
   const totalPrice = normalizeTotalPrice(
-    jobData.totalPrice ?? jobData.totalPriceUsdt ?? jobData.totalPriceVnd ?? jobData.order?.totalPrice,
+    jobData.totalPrice ??
+      jobData.totalPriceUsdt ??
+      jobData.totalPriceVnd ??
+      jobData.order?.totalPrice,
   );
+  if (totalPrice === undefined) {
+    console.warn(
+      `[RELAYER] Job ${orderId || orderCode || "unknown"} không có totalPrice. Sẽ bỏ qua kiểm tra số dư USDT preflight và chỉ kiểm tra gas native.`,
+    );
+  }
   const totalPriceVnd = jobData.totalPriceVnd;
   const exchangeRateVndPerUsdt = jobData.exchangeRateVndPerUsdt;
   const callbackUrl = resolveCallbackUrl(jobData.callbackUrl);
-  const callbackSecret = jobData.callbackSecret;
+  const callbackSecret = resolveCallbackSecret(jobData.callbackSecret);
 
   if (!orderId) {
     throw new UnrecoverableError("Thiếu orderId trong payload relayer-buy-job");
   }
 
   if (!Array.isArray(eventIds) || eventIds.length === 0) {
-    throw new UnrecoverableError("Thiếu eventIds/onChainIds trong payload relayer-buy-job");
+    throw new UnrecoverableError(
+      "Thiếu eventIds/onChainIds trong payload relayer-buy-job",
+    );
   }
 
   if (!Array.isArray(quantities) || quantities.length === 0) {
-    throw new UnrecoverableError("Thiếu quantities trong payload relayer-buy-job");
+    throw new UnrecoverableError(
+      "Thiếu quantities trong payload relayer-buy-job",
+    );
   }
 
   if (eventIds.length !== quantities.length) {
-    throw new UnrecoverableError("eventIds và quantities phải có cùng số lượng phần tử");
+    throw new UnrecoverableError(
+      "eventIds và quantities phải có cùng số lượng phần tử",
+    );
   }
 
   if (!buyerAddress || !ethers.isAddress(buyerAddress)) {
     throw new UnrecoverableError("buyerAddress không hợp lệ");
   }
 
-  if (!callbackSecret) {
-    throw new UnrecoverableError(
-      "Thiếu callbackSecret trong payload relayer-buy-job",
-    );
-  }
-
-  if (contractCall.method && !["relayerBuyTicket", "batchRelayerBuyTicket"].includes(contractCall.method)) {
+  if (
+    contractCall.method &&
+    !["relayerBuyTicket", "batchRelayerBuyTicket"].includes(contractCall.method)
+  ) {
     throw new UnrecoverableError(
       `contractCall.method không hợp lệ: ${contractCall.method}`,
     );
   }
 
-  const resolvedMethod =
-    contractCall.method || (eventIds.length > 1 ? "batchRelayerBuyTicket" : "relayerBuyTicket");
+  // Ép phương thức xử lý của queue này luôn là mua gộp (Batch)
+  const resolvedMethod = "batchRelayerBuyTicket";
 
   return {
     orderId: String(orderId),
@@ -237,12 +269,15 @@ async function processRelayerBuyJob(job) {
       context.totalPrice,
     );
 
-    if (!preflight.enoughNative || !preflight.enoughUsdt) {
+    if (
+      !preflight.enoughNative ||
+      (preflight.requiredUsdt !== null && !preflight.enoughUsdt)
+    ) {
       const balanceMessage = [
         !preflight.enoughNative
           ? `native balance=${ethers.formatEther(preflight.nativeBalance)}`
           : null,
-        !preflight.enoughUsdt
+        preflight.requiredUsdt !== null && !preflight.enoughUsdt
           ? `usdt balance=${preflight.usdtBalance.toString()}`
           : null,
       ]
@@ -307,7 +342,10 @@ async function processRelayerBuyJob(job) {
       buyerAddress: context.buyerAddress,
       recipient: context.recipient,
       price: context.price,
-      totalPrice: context.totalPrice.toString(),
+      totalPrice:
+        context.totalPrice !== undefined
+          ? context.totalPrice.toString()
+          : undefined,
       totalPriceVnd: context.totalPriceVnd,
       exchangeRateVndPerUsdt: context.exchangeRateVndPerUsdt,
       status: "success",
@@ -321,6 +359,9 @@ async function processRelayerBuyJob(job) {
     };
 
     try {
+      console.log(
+        `[RELAYER] Gọi callback cho order ${context.orderId} với ví nhận vé: ${context.buyerAddress}${context.recipient ? `, recipient=${context.recipient}` : ""}`,
+      );
       await notifyRelayerCallback(context, successPayload);
     } catch (callbackError) {
       console.error(

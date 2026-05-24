@@ -76,7 +76,7 @@ const config = {
 
   // 7. Cấu hình Relayer Buy Worker
   relayerStrategy: {
-    queueName: process.env.RELAYER_QUEUE_NAME || "relayer-buy-queue",
+    queueName: "relayer-buy-queue",
     dlqQueueName: process.env.RELAYER_DLQ_QUEUE_NAME || "relayer-buy-dlq",
     attempts: parseInt(process.env.RELAYER_ATTEMPTS) || 5,
     backoffDelay: parseInt(process.env.RELAYER_BACKOFF_DELAY) || 5000,
@@ -86,9 +86,7 @@ const config = {
   relayerApi: {
     orderLookupPath:
       process.env.RELAYER_ORDER_LOOKUP_PATH || "/api/v1/internal/orders/",
-    resultPath:
-      process.env.RELAYER_RESULT_PATH ||
-      "/api/v1/webhooks/internal/relayer-buy-result",
+    resultPath: process.env.RELAYER_RESULT_PATH || "/webhooks/relayer-callback",
   },
 
   // Alias để giữ tương thích với các file worker cũ đang dùng config.webhook
