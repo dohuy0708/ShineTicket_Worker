@@ -135,6 +135,24 @@ function parseMintedTokenIdsFromReceipt(receipt) {
     return mintedTokenIds;
   }
 
+  // First try to parse from EventTicketsMinted (Primary Mechanism)
+  for (const log of receipt.logs) {
+    try {
+      const parsedLog = ticketInterface.parseLog(log);
+      if (parsedLog?.name === "EventTicketsMinted") {
+        const startTokenId = Number(parsedLog.args.startTokenId);
+        const quantity = Number(parsedLog.args.quantity);
+        for (let i = 0; i < quantity; i++) {
+          mintedTokenIds.push((startTokenId + i).toString());
+        }
+        return mintedTokenIds; // Early return if primary mechanism succeeds
+      }
+    } catch (error) {
+      continue;
+    }
+  }
+
+  // Fallback to parsing from Transfer events
   for (const log of receipt.logs) {
     try {
       const parsedLog = ticketInterface.parseLog(log);
@@ -284,6 +302,81 @@ async function getBlockchainContext() {
   };
 }
 
+/**
+ * Kiểm tra số dư POL của một địa chỉ bất kỳ
+ * @param {string} address - Địa chỉ cần kiểm tra
+ * @returns {Promise<BigInt>} - Số dư POL (trong Wei)
+ */
+async function getBalanceOfAddress(address) {
+  try {
+    const balance = await provider.getBalance(address);
+    console.log(
+      `💰 [GAS-FUND] Số dư ${address}: ${ethers.formatEther(balance)} POL`,
+    );
+    return balance;
+  } catch (error) {
+    console.error(
+      `❌ [GAS-FUND] Lỗi khi lấy số dư của ${address}: ${error.message}`,
+    );
+    throw error;
+  }
+}
+
+/**
+ * Gửi POL (gas) tới một địa chỉ khách
+ * @param {string} toAddress - Địa chỉ nhận
+ * @param {BigInt|string} amountInWei - Số tiền gửi (tính bằng Wei)
+ * @returns {Promise<Object>} - {txHash, success}
+ */
+async function transferGasToAddress(toAddress, amountInWei) {
+  try {
+    console.log(
+      `🔄 [GAS-FUND] Đang chuyển ${ethers.formatEther(
+        amountInWei,
+      )} POL tới ${toAddress}...`,
+    );
+
+    // Kiểm tra số dư ví Worker trước khi chuyển
+    const walletBalance = await provider.getBalance(wallet.address);
+    const amountBigInt = BigInt(amountInWei);
+
+    if (walletBalance < amountBigInt) {
+      throw new Error(
+        `Số dư ví Worker (${ethers.formatEther(
+          walletBalance,
+        )} POL) không đủ để chuyển ${ethers.formatEther(amountBigInt)} POL`,
+      );
+    }
+
+    // Gửi giao dịch
+    const tx = await wallet.sendTransaction({
+      to: toAddress,
+      value: amountBigInt,
+    });
+
+    console.log(`⏳ [GAS-FUND] Tx Hash: ${tx.hash}`);
+
+    // Chờ xác nhận (1 block)
+    const receipt = await tx.wait(1);
+
+    console.log(
+      `✅ [GAS-FUND] Chuyển gas thành công! Tx: ${tx.hash}, Gas Used: ${receipt.gasUsed}`,
+    );
+
+    return {
+      success: true,
+      txHash: tx.hash,
+      amount: ethers.formatEther(amountBigInt),
+      toAddress,
+    };
+  } catch (error) {
+    console.error(
+      `❌ [GAS-FUND] Lỗi khi chuyển gas tới ${toAddress}: ${error.message}`,
+    );
+    throw error;
+  }
+}
+
 export {
   initUSDTApproval,
   waitForTransaction,
@@ -296,4 +389,6 @@ export {
   executeBatchCheckInOnChain,
   getBatchTicketStatusOnChain,
   verifyConnection,
+  getBalanceOfAddress,
+  transferGasToAddress,
 };

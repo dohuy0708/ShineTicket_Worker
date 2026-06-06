@@ -1,4 +1,5 @@
 import dotenv from "dotenv";
+import { ethers } from "ethers";
 dotenv.config();
 
 const config = {
@@ -60,6 +61,18 @@ const config = {
   // Không cần batch nội bộ, chỉ cần tên queue để BE push job
   expireStrategy: {
     queueName: "expire-queue",
+  },
+
+  // 4c. Chiến lược GAS FUND (Quỹ Gas - Cách ly & Thực thi)
+  // Worker kiểm tra số dư POL của địa chỉ, nếu < 0.01 POL thì transfer gas
+  gasFundStrategy: {
+    queueName: process.env.GAS_FUND_QUEUE_NAME || "gas-fund-queue",
+    minBalance: ethers.parseEther(process.env.GAS_FUND_MIN_BALANCE || "0.02"), // 0.01 POL (tối thiểu)
+    gasTransferAmount: ethers.parseEther(
+      process.env.GAS_FUND_TRANSFER_AMOUNT || "0.05",
+    ), // 0.05 POL (bơm)
+    concurrency: parseInt(process.env.GAS_FUND_CONCURRENCY) || 5,
+    webhookPath: process.env.GAS_FUND_WEBHOOK_PATH || "/webhooks/gas-callback",
   },
 
   // 5. Cấu hình IPFS (Pinata)

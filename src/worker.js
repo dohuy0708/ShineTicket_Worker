@@ -11,6 +11,8 @@ import {
   executeBatchCheckInOnChain,
   getBatchTicketStatusOnChain,
   verifyConnection,
+  getBalanceOfAddress,
+  transferGasToAddress,
 } from "./blockchain.js";
 import { isRelayerFatalFailure, processRelayerBuyJob } from "./relayer.js";
 
@@ -89,31 +91,55 @@ async function flushCheckInBatch() {
 }
 
 // ==========================================
-// PHẦN 3: LOGIC THÊM VÀO BUFFER (ADD TO BATCH)
+// PHẦN 3B: CLEANUP STALLED JOBS
 // ==========================================
 
 /**
- * Thêm vào hàng chờ CHECK-IN
+ * Dọn dẹp các job bị kẹt (stalled jobs) từ Redis Queue
+ * Nguyên nhân: Worker bị tắt đột ngột khi đang xử lý job
  */
-function addToCheckInBuffer(ticketId) {
-  return new Promise((resolve, reject) => {
-    checkInBuffer.push({ ticketId, resolve, reject });
+async function cleanupStalledJobs() {
+  try {
+    console.log("🧹 Đang kiểm tra và dọn dẹp stalled jobs từ Redis...");
 
-    totalCheckInTicketsQueued += 1;
+    const queueNames = [
+      config.relayerStrategy.queueName,
+      config.checkInStrategy.queueName,
+      config.expireStrategy.queueName,
+      config.gasFundStrategy.queueName,
+    ];
 
-    console.log(
-      `📥 [CHECK-IN] Buffer: ${checkInBuffer.length}/${config.checkInStrategy.batchSize} job, tổng vé đang chờ sync: ${totalCheckInTicketsQueued}`,
-    );
+    for (const queueName of queueNames) {
+      const queue = new Queue(queueName, {
+        connection: config.redis,
+        skipConfigValidation: true,
+      });
 
-    if (checkInBuffer.length >= config.checkInStrategy.batchSize) {
-      flushCheckInBatch();
-    } else if (!checkInTimer) {
-      checkInTimer = setTimeout(
-        flushCheckInBatch,
-        config.checkInStrategy.batchTimeout,
-      );
+      try {
+        // Lấy danh sách stalled jobs
+        const stalledJobs = await queue.getStalledCount();
+
+        if (stalledJobs > 0) {
+          console.log(
+            `⚠️ [${queueName}] Tìm thấy ${stalledJobs} job bị kẹt. Dọn dẹp...`,
+          );
+
+          // BullMQ tự động xử lý stalled jobs, nhưng ta có thể log để monitoring
+          const jobs = await queue.getJobs(["active"]);
+          for (const job of jobs) {
+            console.log(`  - Job ${job.id} (attempts: ${job.attemptsMade})`);
+          }
+        }
+      } finally {
+        await queue.close();
+      }
     }
-  });
+
+    console.log("✅ Hoàn tất kiểm tra stalled jobs.\n");
+  } catch (error) {
+    console.error("⚠️ Lỗi khi dọn dẹp stalled jobs:", error.message);
+    // Không throw - tiếp tục khởi động worker dù cleanup fail
+  }
 }
 
 // ==========================================
@@ -130,6 +156,17 @@ async function startWorkers() {
 
   // 1.1 Kiểm tra cấp quyền USDT cho Smart Contract
   await initUSDTApproval();
+
+  // 1.2 Dọn dẹp stalled jobs
+  await cleanupStalledJobs();
+
+  // === LOG QUEUE NAMES ===
+  console.log("\n📋 === QUEUE CONFIGURATION ===");
+  console.log(`📨 Relayer Buy Queue: ${config.relayerStrategy.queueName}`);
+  console.log(`📨 Check-in Queue: ${config.checkInStrategy.queueName}`);
+  console.log(`📨 Expire Queue: ${config.expireStrategy.queueName}`);
+  console.log(`📨 Gas-Fund Queue: ${config.gasFundStrategy.queueName}`);
+  console.log("=============================\n");
 
   const relayerDlqQueue = new Queue(config.relayerStrategy.dlqQueueName, {
     connection: config.redis,
@@ -381,6 +418,158 @@ async function startWorkers() {
     },
   );
 
+  // 5. Worker GAS-FUND (Quỹ Gas - Cách ly & Thực thi)
+  const gasFundWorker = new Worker(
+    config.gasFundStrategy.queueName,
+    async (job) => {
+      console.log(`📨 [GAS-FUND] Raw job.data:`, JSON.stringify(job.data));
+
+      const { walletAddress } = job.data || {};
+
+      if (!walletAddress || !ethers.isAddress(walletAddress)) {
+        throw new Error(
+          `❌ [GAS-FUND] walletAddress không hợp lệ: ${walletAddress}. Job data: ${JSON.stringify(job.data)}`,
+        );
+      }
+
+      console.log(
+        `📨 [GAS-FUND] Nhận job từ Backend: jobId=${job.id}, walletAddress=${walletAddress}`,
+      );
+
+      try {
+        // Bước 2: Kiểm tra kho hàng (Check Balance)
+        const balance = await getBalanceOfAddress(walletAddress);
+
+        // Bước 3: Ra quyết định logic
+        if (balance >= config.gasFundStrategy.minBalance) {
+          // Trường hợp 1 (Tiết kiệm): Số dư >= 0.01 POL
+          console.log(
+            `✅ [GAS-FUND] Số dư đủ (${ethers.formatEther(
+              balance,
+            )} POL >= ${ethers.formatEther(
+              config.gasFundStrategy.minBalance,
+            )} POL). Bỏ qua bơm tiền.`,
+          );
+
+          // Báo cáo hoàn tất (skip)
+          try {
+            await axios.post(
+              `${config.backend.url}${config.gasFundStrategy.webhookPath}`,
+              {
+                jobId: job.id,
+                status: "success",
+              },
+            );
+
+            console.log(
+              `📞 [GAS-FUND] Gọi webhook (skip): ${config.backend.url}${config.gasFundStrategy.webhookPath}`,
+            );
+          } catch (webhookError) {
+            console.error(
+              `⚠️ [GAS-FUND] Lỗi gọi webhook (skip): ${webhookError.message}`,
+            );
+            // Không throw - job vẫn thành công dù webhook fail
+          }
+
+          return {
+            status: "skipped",
+            reason: "balance_sufficient",
+            walletAddress,
+            currentBalance: ethers.formatEther(balance),
+          };
+        }
+
+        // Trường hợp 2 (Bơm tiền): Số dư < 0.01 POL
+        console.log(
+          `💧 [GAS-FUND] Số dư không đủ (${ethers.formatEther(
+            balance,
+          )} POL < ${ethers.formatEther(
+            config.gasFundStrategy.minBalance,
+          )} POL). Sẽ bơm tiền.`,
+        );
+
+        // Bước 4: Chuyển gas tới khách
+        const transferResult = await transferGasToAddress(
+          walletAddress,
+          config.gasFundStrategy.gasTransferAmount,
+        );
+
+        // Bước 5: Báo cáo hoàn tất
+        try {
+          await axios.post(
+            `${config.backend.url}${config.gasFundStrategy.webhookPath}`,
+            {
+              jobId: job.id,
+              status: "success",
+              txHash: transferResult.txHash,
+            },
+          );
+
+          console.log(
+            `📞 [GAS-FUND] Gọi webhook (success): ${config.backend.url}${config.gasFundStrategy.webhookPath}`,
+          );
+        } catch (webhookError) {
+          console.error(
+            `⚠️ [GAS-FUND] Lỗi gọi webhook (success): ${webhookError.message}`,
+          );
+          // Không throw - gas đã chuyển thành công, chỉ webhook fail
+        }
+
+        return {
+          status: "success",
+          reason: "gas_transferred",
+          walletAddress,
+          txHash: transferResult.txHash,
+          transferAmount: ethers.formatEther(
+            config.gasFundStrategy.gasTransferAmount,
+          ),
+          previousBalance: ethers.formatEther(balance),
+        };
+      } catch (error) {
+        console.error(
+          `❌ [GAS-FUND] Lỗi xử lý job ${job.id}: ${error.message}`,
+        );
+
+        // Báo cáo lỗi về Backend
+        try {
+          await axios.post(
+            `${config.backend.url}${config.gasFundStrategy.webhookPath}`,
+            {
+              jobId: job.id,
+              status: "failed",
+              errorMessage: error.message,
+            },
+          );
+        } catch (webhookError) {
+          console.error(
+            `⚠️ [GAS-FUND] Lỗi gọi webhook (failed): ${webhookError.message}`,
+          );
+        }
+
+        // Throw để BullMQ retry
+        throw error;
+      }
+    },
+    {
+      connection: config.redis,
+      concurrency: config.gasFundStrategy.concurrency,
+      skipConfigValidation: true,
+      stallInterval: 5000, // Kiểm tra stalled jobs mỗi 5 giây
+      maxStalledCount: 2, // Nếu job bị kẹt quá 2 lần thì đưa vào DLQ
+    },
+  );
+
+  // === PHÁT HIỆN VÀ XỬ LÝ STALLED JOBS ===
+  gasFundWorker.on("stalled", (jobId) => {
+    console.warn(
+      `⚠️ [GAS-FUND] Phát hiện Job ${jobId} bị kẹt (stalled). Sẽ xử lý lại...`,
+    );
+  });
+
+  gasFundWorker.on("error", (error) => {
+    console.error(`❌ [GAS-FUND] Worker error:`, error.message);
+  });
+
   // Log trạng thái
   relayerBuyWorker.on("ready", () =>
     console.log(
@@ -405,6 +594,15 @@ async function startWorkers() {
   );
   expireWorker.on("failed", (job, err) =>
     console.error(`❌ Expire Job ${job.id} Failed: ${err.message}`),
+  );
+
+  gasFundWorker.on("ready", () =>
+    console.log(
+      `✅ Gas-Fund Worker Ready: ${config.gasFundStrategy.queueName}`,
+    ),
+  );
+  gasFundWorker.on("failed", (job, err) =>
+    console.error(`❌ Gas-Fund Job ${job.id} Failed: ${err.message}`),
   );
 }
 
