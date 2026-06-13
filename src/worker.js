@@ -99,47 +99,45 @@ async function flushCheckInBatch() {
  * Nguyên nhân: Worker bị tắt đột ngột khi đang xử lý job
  */
 async function cleanupStalledJobs() {
-  try {
-    console.log("🧹 Đang kiểm tra và dọn dẹp stalled jobs từ Redis...");
+  // Giảm thiểu connections: tạo từng queue, đóng ngay sau khi xong
+  const queueNames = [
+    config.relayerStrategy.queueName,
+    config.checkInStrategy.queueName,
+    config.expireStrategy.queueName,
+    config.gasFundStrategy.queueName,
+  ];
 
-    const queueNames = [
-      config.relayerStrategy.queueName,
-      config.checkInStrategy.queueName,
-      config.expireStrategy.queueName,
-      config.gasFundStrategy.queueName,
-    ];
+  console.log("🧹 Đang kiểm tra và dọn dẹp stalled jobs từ Redis...");
 
-    for (const queueName of queueNames) {
-      const queue = new Queue(queueName, {
+  for (const queueName of queueNames) {
+    let queue = null;
+    try {
+      queue = new Queue(queueName, {
         connection: config.redis,
         skipConfigValidation: true,
       });
 
-      try {
-        // Lấy danh sách stalled jobs
-        const stalledJobs = await queue.getStalledCount();
+      const stalledJobs = await queue.getStalledCount();
 
-        if (stalledJobs > 0) {
-          console.log(
-            `⚠️ [${queueName}] Tìm thấy ${stalledJobs} job bị kẹt. Dọn dẹp...`,
-          );
+      if (stalledJobs > 0) {
+        console.log(
+          `⚠️ [${queueName}] Tìm thấy ${stalledJobs} job bị kẹt. Dọn dẹp...`,
+        );
 
-          // BullMQ tự động xử lý stalled jobs, nhưng ta có thể log để monitoring
-          const jobs = await queue.getJobs(["active"]);
-          for (const job of jobs) {
-            console.log(`  - Job ${job.id} (attempts: ${job.attemptsMade})`);
-          }
+        const jobs = await queue.getJobs(["active"]);
+        for (const job of jobs) {
+          console.log(`  - Job ${job.id} (attempts: ${job.attemptsMade})`);
         }
-      } finally {
-        await queue.close();
       }
+    } catch (error) {
+      console.error(`⚠️ Lỗi kiểm tra queue [${queueName}]:`, error.message);
+    } finally {
+      // Đóng ngay để giải phóng connection
+      if (queue) await queue.close().catch(() => {});
     }
-
-    console.log("✅ Hoàn tất kiểm tra stalled jobs.\n");
-  } catch (error) {
-    console.error("⚠️ Lỗi khi dọn dẹp stalled jobs:", error.message);
-    // Không throw - tiếp tục khởi động worker dù cleanup fail
   }
+
+  console.log("✅ Hoàn tất kiểm tra stalled jobs.\n");
 }
 
 // ==========================================
@@ -289,7 +287,7 @@ async function startWorkers() {
     },
     {
       connection: config.redis,
-      concurrency: 50,
+      concurrency: 5, // Giảm từ 50 → 5 để tiết kiệm connections (free tier giới hạn 30)
       skipConfigValidation: true,
     },
   );
@@ -413,7 +411,7 @@ async function startWorkers() {
     },
     {
       connection: config.redis,
-      concurrency: 20,
+      concurrency: 3, // Giảm từ 20 → 3 để tiết kiệm connections
       skipConfigValidation: true,
     },
   );

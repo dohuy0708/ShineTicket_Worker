@@ -3,35 +3,27 @@ import { ethers } from "ethers";
 dotenv.config();
 
 const config = {
-  // 1. Cấu hình Redis (Đã tối ưu để tránh lỗi ECONNRESET)
+  // 1. Cấu hình Redis (Tối ưu số connections - tránh vượt giới hạn 30 của free tier)
   redis: {
     host: process.env.REDIS_HOST || "localhost",
     port: parseInt(process.env.REDIS_PORT) || 6379,
     password: process.env.REDIS_PASSWORD,
 
-    // --- BẮT ĐẦU PHẦN SỬA ĐỔI ---
-
-    // 1. Ping Redis mỗi 10 giây để giữ kết nối luôn sống (Fix lỗi ECONNRESET)
-    keepAlive: 10000,
-
-    // 2. Bắt buộc phải có dòng này khi dùng BullMQ (theo document)
-    // Nếu không có, BullMQ sẽ báo lỗi khi Redis chập chờn
+    // BẮT BUỘC cho BullMQ
     maxRetriesPerRequest: null,
 
-    // 3. Thời gian chờ kết nối tối đa (10 giây)
+    // Thời gian chờ kết nối tối đa
     connectTimeout: 10000,
 
-    // 4. Chiến lược tự động kết nối lại khi bị rớt mạng
+    // Tăng thời gian giữa các lần retry để tránh tạo quá nhiều connections
     retryStrategy: function (times) {
-      // Thử lại sau: 50ms, 100ms, 150ms... tối đa chờ 2 giây
-      const delay = Math.min(times * 50, 2000);
+      if (times > 10) return null; // Dừng sau 10 lần thất bại
+      const delay = Math.min(times * 200, 5000); // Tăng lên 200ms/lần, tối đa 5 giây
       return delay;
     },
 
     // (Tùy chọn) Nếu dùng Redis Cloud có SSL (địa chỉ rediss://), bỏ comment dòng dưới:
     // tls: { rejectUnauthorized: false },
-
-    // --- KẾT THÚC PHẦN SỬA ĐỔI ---
   },
 
   // 2. Cấu hình Blockchain (Polygon Amoy)
@@ -71,7 +63,7 @@ const config = {
     gasTransferAmount: ethers.parseEther(
       process.env.GAS_FUND_TRANSFER_AMOUNT || "0.05",
     ), // 0.05 POL (bơm)
-    concurrency: parseInt(process.env.GAS_FUND_CONCURRENCY) || 5,
+    concurrency: parseInt(process.env.GAS_FUND_CONCURRENCY) || 1, // Giảm từ 5 → 1 để tiết kiệm connections
     webhookPath: process.env.GAS_FUND_WEBHOOK_PATH || "/webhooks/gas-callback",
   },
 
@@ -91,7 +83,7 @@ const config = {
   relayerStrategy: {
     queueName: "relayer-buy-queue",
     dlqQueueName: process.env.RELAYER_DLQ_QUEUE_NAME || "relayer-buy-dlq",
-    attempts: parseInt(process.env.RELAYER_ATTEMPTS) || 5,
+    attempts: parseInt(process.env.RELAYER_ATTEMPTS) || 3, // Giảm từ 5 → 3
     backoffDelay: parseInt(process.env.RELAYER_BACKOFF_DELAY) || 5000,
     concurrency: parseInt(process.env.RELAYER_CONCURRENCY) || 1,
   },
