@@ -248,9 +248,48 @@ async function verifyConnection() {
 
     const balance = await provider.getBalance(wallet.address);
     console.log(`💰 Số dư ví Worker: ${ethers.formatEther(balance)} POL/MATIC`);
-    // Một số phiên bản contract dùng Ownable (owner()), một số khác dùng AccessControl (DEFAULT_ADMIN_ROLE + hasRole)
+
+    // Kiểm tra quyền trên Contract (AccessControl)
     try {
-      if (typeof contract.owner === "function") {
+      if (
+        typeof contract.DEFAULT_ADMIN_ROLE === "function" &&
+        typeof contract.hasRole === "function" &&
+        typeof contract.OPERATOR_ROLE === "function"
+      ) {
+        const adminRole = await contract.DEFAULT_ADMIN_ROLE();
+        const operatorRole = await contract.OPERATOR_ROLE();
+
+        const isAdmin = await contract.hasRole(adminRole, wallet.address);
+        const isOperator = await contract.hasRole(operatorRole, wallet.address);
+
+        if (!isAdmin && !isOperator) {
+          console.error(
+            "❌ CRITICAL: Ví Worker KHÔNG có DEFAULT_ADMIN_ROLE và OPERATOR_ROLE trên Contract!\n" +
+            "   → batchCheckIn() và mintBatchUsers() sẽ bị REVERT.\n" +
+            "   → Hãy chạy script: node scripts/grantOperatorRole.js để cấp quyền.",
+          );
+          return false;
+        }
+
+        if (isAdmin) {
+          console.log("👑 Quyền DEFAULT_ADMIN_ROLE: ✅ OK");
+        } else {
+          console.warn(
+            "⚠️  Ví Worker KHÔNG có DEFAULT_ADMIN_ROLE (mintBatchUsers/relayerBuyTicket sẽ thất bại)",
+          );
+        }
+
+        if (isOperator) {
+          console.log("🔑 Quyền OPERATOR_ROLE: ✅ OK (batchCheckIn hoạt động)");
+        } else {
+          console.error(
+            "❌ Ví Worker KHÔNG có OPERATOR_ROLE → batchCheckIn() sẽ REVERT!\n" +
+            "   → Hãy chạy: node scripts/grantOperatorRole.js",
+          );
+          // Không dừng Worker hoàn toàn, nhưng báo lỗi rõ ràng
+        }
+      } else if (typeof contract.owner === "function") {
+        // Fallback: Ownable pattern
         const owner = await contract.owner();
         if (owner.toLowerCase() !== wallet.address.toLowerCase()) {
           console.warn(
@@ -258,19 +297,6 @@ async function verifyConnection() {
           );
         } else {
           console.log("👑 Quyền Admin: OK (owner)");
-        }
-      } else if (
-        typeof contract.DEFAULT_ADMIN_ROLE === "function" &&
-        typeof contract.hasRole === "function"
-      ) {
-        const adminRole = await contract.DEFAULT_ADMIN_ROLE();
-        const isAdmin = await contract.hasRole(adminRole, wallet.address);
-        if (!isAdmin) {
-          console.warn(
-            "⚠️ CẢNH BÁO: Ví Worker KHÔNG có DEFAULT_ADMIN_ROLE trên Contract! Một vài thao tác có thể bị từ chối.",
-          );
-        } else {
-          console.log("👑 Quyền Admin: OK (DEFAULT_ADMIN_ROLE)");
         }
       } else {
         console.warn(

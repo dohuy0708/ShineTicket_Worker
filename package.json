@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node src/index.js",
+    "grant:operator": "node scripts/grantOperatorRole.js",
     "precheck:relayer-callback": "node scripts/test-relayer-callback.js"
   },
   "dependencies": {
