@@ -41,7 +41,8 @@ function resolveCallbackUrl(callbackUrl) {
     return callbackPath;
   }
 
-  return joinUrl(config.backend.beApiUrl || config.backend.url, callbackPath);
+  // Ưu tiên dùng backend.url (đã có /api) để tránh nhầm lẫn giữa các biến môi trường
+  return joinUrl(config.backend.url || config.backend.beApiUrl, callbackPath);
 }
 
 function resolveCallbackSecret(callbackSecret) {

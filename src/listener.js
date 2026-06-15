@@ -1,56 +1,68 @@
 import { ethers } from "ethers";
 import config from "./config.js";
-import { createRequire } from "module"; // Load ABI
-import axios from "axios"; // Để gọi API Repo 1
-
+import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 const ticketArtifact = require("../abi/ShineTicket.json");
 
+// Khoảng thời gian polling (ms) - 15 giây
+const POLLING_INTERVAL_MS = 15000;
+
 async function startListener() {
-  console.log("👂 Đang khởi động Blockchain Listener...");
+  console.log("👂 Đang khởi động Blockchain Listener (polling mode)...");
 
-  // Lưu ý: Để nghe sự kiện tốt nhất nên dùng WebSocket Provider (wss://...)
-  // Nhưng dùng JsonRpcProvider (https://...) cũng tạm được với polling.
   const provider = new ethers.JsonRpcProvider(config.blockchain.rpcUrl);
+  const contractInterface = new ethers.Interface(ticketArtifact.abi);
+  const contractAddress = config.blockchain.contractAddress;
 
-  const contract = new ethers.Contract(
-    config.blockchain.contractAddress,
-    ticketArtifact.abi,
-    provider,
-  );
+  // Lấy block hiện tại để bắt đầu nghe từ đây (tránh xử lý lại giao dịch cũ)
+  let lastBlock = await provider.getBlockNumber();
+  console.log(`👂 [LISTENER] Bắt đầu polling từ block #${lastBlock}`);
 
-  // Lắng nghe sự kiện Transfer (theo chuẩn ERC721)
-  // Sự kiện: Transfer(address indexed from, address indexed to, uint256 indexed tokenId)
-  contract.on("Transfer", async (from, to, tokenId, event) => {
-    console.log(`🚨 PHÁT HIỆN GIAO DỊCH: Vé #${tokenId} từ ${from} -> ${to}`);
-    console.log(`👛 Ví nhận vé: ${to}`);
+  // Tạo bộ lọc topic cho event Transfer (ERC-721 chuẩn)
+  const transferTopic = ethers.id("Transfer(address,address,uint256)");
 
-    // Bỏ qua trường hợp Mint (from = 0x0) vì Worker đã xử lý rồi
-    if (from === ethers.ZeroAddress) return;
-
-    // Bỏ qua trường hợp Burn (to = 0x0) - Hoặc xử lý nếu muốn
-
-    // GỌI WEBHOOK VỀ REPO 1 ĐỂ UPDATE DB
+  async function pollNewTransfers() {
     try {
-      const payload = {
-        tokenId: tokenId.toString(),
-        fromAddress: from,
-        toAddress: to,
-        txHash: event.log.transactionHash,
-      };
+      const currentBlock = await provider.getBlockNumber();
 
-      console.log(
-        `📞 [LISTENER] Gọi webhook transfer: http://localhost:3000/api/webhook/transfer với payload: ${JSON.stringify(
-          payload,
-        )}`,
-      );
+      if (currentBlock <= lastBlock) return; // Không có block mới
 
-      await axios.post("http://localhost:3000/api/webhook/transfer", payload);
-      console.log("✅ Đã báo Backend cập nhật chủ sở hữu mới.");
-    } catch (err) {
-      console.error("❌ Lỗi gọi API Backend:", err.message);
+      // Lấy logs từ block cũ + 1 đến block mới nhất
+      const logs = await provider.getLogs({
+        address: contractAddress,
+        topics: [transferTopic],
+        fromBlock: lastBlock + 1,
+        toBlock: currentBlock,
+      });
+
+      for (const log of logs) {
+        try {
+          const parsedLog = contractInterface.parseLog(log);
+          if (!parsedLog) continue;
+
+          const from = parsedLog.args[0];
+          const to = parsedLog.args[1];
+          const tokenId = parsedLog.args[2];
+
+          console.log(`🚨 PHÁT HIỆN GIAO DỊCH: Vé #${tokenId} từ ${from} -> ${to}`);
+          console.log(`👛 Ví nhận vé: ${to}`);
+
+          // Bỏ qua trường hợp Mint (from = 0x0)
+          if (from.toLowerCase() === ethers.ZeroAddress.toLowerCase()) continue;
+        } catch (parseErr) {          // Bỏ qua log không parse được
+        }
+      }
+
+      lastBlock = currentBlock;
+    } catch (error) {
+      // Bắt mọi lỗi RPC (kể cả filter not found) và bỏ qua, vòng tiếp theo sẽ tự retry
+      console.warn(`⚠️ [LISTENER] Lỗi polling (sẽ tự thử lại): ${error.message}`);
     }
-  });
+  }
+
+  // Chạy lần đầu ngay, sau đó lặp lại mỗi POLLING_INTERVAL_MS
+  pollNewTransfers();
+  setInterval(pollNewTransfers, POLLING_INTERVAL_MS);
 }
 
 startListener();
