@@ -27,36 +27,56 @@ async function startListener() {
 
       if (currentBlock <= lastBlock) return; // Không có block mới
 
-      // Lấy logs từ block cũ + 1 đến block mới nhất
-      const logs = await provider.getLogs({
-        address: contractAddress,
-        topics: [transferTopic],
-        fromBlock: lastBlock + 1,
-        toBlock: currentBlock,
-      });
+      // Một số RPC (Infura, Alchemy, Geth cấu hình) giới hạn khoảng block cho eth_getLogs.
+      // Chia nhỏ khoảng từ lastBlock+1 -> currentBlock thành từng chunk để tránh lỗi.
+      const MAX_BLOCK_RANGE = config.blockRangeLimit ?? 500;
+      const from = lastBlock + 1;
+      const to = currentBlock;
 
-      for (const log of logs) {
+      for (let start = from; start <= to; start += MAX_BLOCK_RANGE) {
+        const end = Math.min(start + MAX_BLOCK_RANGE - 1, to);
         try {
-          const parsedLog = contractInterface.parseLog(log);
-          if (!parsedLog) continue;
+          const logs = await provider.getLogs({
+            address: contractAddress,
+            topics: [transferTopic],
+            fromBlock: start,
+            toBlock: end,
+          });
 
-          const from = parsedLog.args[0];
-          const to = parsedLog.args[1];
-          const tokenId = parsedLog.args[2];
+          for (const log of logs) {
+            try {
+              const parsedLog = contractInterface.parseLog(log);
+              if (!parsedLog) continue;
 
-          console.log(`🚨 PHÁT HIỆN GIAO DỊCH: Vé #${tokenId} từ ${from} -> ${to}`);
-          console.log(`👛 Ví nhận vé: ${to}`);
+              const from = parsedLog.args[0];
+              const to = parsedLog.args[1];
+              const tokenId = parsedLog.args[2];
 
-          // Bỏ qua trường hợp Mint (from = 0x0)
-          if (from.toLowerCase() === ethers.ZeroAddress.toLowerCase()) continue;
-        } catch (parseErr) {          // Bỏ qua log không parse được
+              console.log(
+                `🚨 PHÁT HIỆN GIAO DỊCH: Vé #${tokenId} từ ${from} -> ${to}`,
+              );
+              console.log(`👛 Ví nhận vé: ${to}`);
+
+              // Bỏ qua trường hợp Mint (from = 0x0)
+              if (from.toLowerCase() === ethers.ZeroAddress.toLowerCase())
+                continue;
+            } catch (parseErr) {
+              // Bỏ qua log không parse được
+            }
+          }
+        } catch (rangeErr) {
+          console.warn(
+            `⚠️ [LISTENER] Lỗi khi lấy logs block ${start}-${end} (sẽ thử tiếp): ${rangeErr.message}`,
+          );
         }
       }
 
       lastBlock = currentBlock;
     } catch (error) {
       // Bắt mọi lỗi RPC (kể cả filter not found) và bỏ qua, vòng tiếp theo sẽ tự retry
-      console.warn(`⚠️ [LISTENER] Lỗi polling (sẽ tự thử lại): ${error.message}`);
+      console.warn(
+        `⚠️ [LISTENER] Lỗi polling (sẽ tự thử lại): ${error.message}`,
+      );
     }
   }
 
