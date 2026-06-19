@@ -1,4 +1,4 @@
-import { verifyConnection } from "./blockchain.js";
+import { verifyConnection, initUSDTApproval } from "./blockchain.js";
 
 // Import file worker để kích hoạt logic xử lý hàng đợi
 import "./worker.js";
@@ -16,6 +16,9 @@ async function main() {
     console.error("❌ CRITICAL: Không thể kết nối Blockchain. Dừng Worker.");
     process.exit(1);
   }
+
+  // Khởi tạo Allowance USDT
+  await initUSDTApproval();
 }
 
 main();
