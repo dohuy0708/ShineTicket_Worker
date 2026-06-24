@@ -489,10 +489,23 @@ async function startWorkers() {
 }
 
 // Handle Graceful Shutdown
-process.on("SIGINT", async () => {
+async function gracefulShutdown() {
   console.log("Đang tắt Worker...");
+  try {
+    if (typeof mintWorker !== 'undefined') await mintWorker.close();
+    if (typeof checkInWorker !== 'undefined') await checkInWorker.close();
+    if (typeof relayerBuyWorker !== 'undefined') await relayerBuyWorker.close();
+    if (typeof gasFundWorker !== 'undefined') await gasFundWorker.close();
+    console.log("Đã đóng các worker an toàn.");
+  } catch (error) {
+    console.error("Lỗi khi đóng worker:", error);
+  }
   process.exit(0);
-});
+}
+
+process.on("SIGINT", gracefulShutdown);
+process.on("SIGTERM", gracefulShutdown);
+process.on("SIGUSR2", gracefulShutdown); // Dành cho Nodemon
 
 // CHẠY
 startWorkers();
