@@ -5,9 +5,9 @@ dotenv.config();
 const config = {
   // 1. Cấu hình Redis (Tối ưu số connections - tránh vượt giới hạn 30 của free tier)
   redis: {
-    host: process.env.REDIS_HOST || "localhost",
-    port: parseInt(process.env.REDIS_PORT) || 6379,
-    password: process.env.REDIS_PASSWORD,
+    host: process.env.REDIS_HOST?.trim() || "localhost",
+    port: parseInt(process.env.REDIS_PORT?.trim()) || 6379,
+    password: process.env.REDIS_PASSWORD?.trim(),
 
     // BẮT BUỘC cho BullMQ
     maxRetriesPerRequest: null,

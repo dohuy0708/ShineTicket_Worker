@@ -116,11 +116,11 @@ async function cleanupStalledJobs() {
         skipConfigValidation: true,
       });
 
-      const stalledJobs = await queue.getStalledCount();
+      const counts = await queue.getJobCounts();
 
-      if (stalledJobs > 0) {
+      if (counts.active > 0) {
         console.log(
-          `⚠️ [${queueName}] Tìm thấy ${stalledJobs} job bị kẹt. Dọn dẹp...`,
+          `⚠️ [${queueName}] Tìm thấy ${counts.active} job đang active. Dọn dẹp...`,
         );
 
         const jobs = await queue.getJobs(["active"]);
