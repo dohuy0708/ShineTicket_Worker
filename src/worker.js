@@ -90,6 +90,19 @@ async function flushCheckInBatch() {
   }
 }
 
+function addToCheckInBuffer(ticketId) {
+  return new Promise((resolve, reject) => {
+    checkInBuffer.push({ ticketId, resolve, reject });
+    totalCheckInTicketsQueued++;
+
+    if (checkInBuffer.length >= config.checkInStrategy.maxBatchSize) {
+      flushCheckInBatch();
+    } else if (!checkInTimer) {
+      checkInTimer = setTimeout(flushCheckInBatch, config.checkInStrategy.maxWaitTime);
+    }
+  });
+}
+
 // ==========================================
 // PHẦN 3B: CLEANUP STALLED JOBS
 // ==========================================
