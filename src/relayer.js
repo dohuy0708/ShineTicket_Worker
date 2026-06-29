@@ -238,12 +238,28 @@ function serializeReceipt(receipt) {
 }
 
 async function sendRelayerCallback(callbackUrl, callbackSecret, payload) {
-  await axios.post(callbackUrl, payload, {
-    headers: {
-      "x-relayer-callback-secret": callbackSecret,
-    },
-    timeout: 60000, // Tăng lên 60 giây để chờ Render Backend tỉnh dậy
-  });
+  console.log(`[RELAYER] Bắt đầu gọi Axios POST tới: ${callbackUrl}`);
+  try {
+    await axios.post(callbackUrl, payload, {
+      headers: {
+        "x-relayer-callback-secret": callbackSecret,
+      },
+      timeout: 60000, // Tăng lên 60 giây để chờ Render Backend tỉnh dậy
+    });
+    console.log(`[RELAYER] Axios POST tới ${callbackUrl} thành công!`);
+  } catch (error) {
+    console.error(`[RELAYER] Axios POST tới ${callbackUrl} thất bại!`);
+    console.error(`[RELAYER] Lỗi toàn cục (toán bộ object):`, error);
+    if (error.response) {
+      console.error(`[RELAYER] Response data từ server:`, error.response.data);
+      console.error(`[RELAYER] Response status:`, error.response.status);
+    } else if (error.request) {
+      console.error(`[RELAYER] Không nhận được phản hồi (Network Error / Timeout):`, error.message);
+    } else {
+      console.error(`[RELAYER] Lỗi setup request:`, error.message);
+    }
+    throw error;
+  }
 }
 
 async function notifyRelayerCallback(context, payload) {
