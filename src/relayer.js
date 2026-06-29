@@ -242,7 +242,7 @@ async function sendRelayerCallback(callbackUrl, callbackSecret, payload) {
     headers: {
       "x-relayer-callback-secret": callbackSecret,
     },
-    timeout: 15000,
+    timeout: 60000, // Tăng lên 60 giây để chờ Render Backend tỉnh dậy
   });
 }
 
@@ -367,10 +367,10 @@ async function processRelayerBuyJob(job) {
     } catch (callbackError) {
       console.error(
         `[RELAYER] Callback success thất bại cho order ${context.orderId}:`,
-        callbackError.message,
+        callbackError.response ? JSON.stringify(callbackError.response.data) : callbackError.message,
       );
       throw new UnrecoverableError(
-        `Đã mint on-chain thành công nhưng callback BE thất bại: ${callbackError.message}`,
+        `Đã mint on-chain thành công nhưng callback BE thất bại: ${callbackError.response ? JSON.stringify(callbackError.response.data) : callbackError.message}`,
       );
     }
 
@@ -407,7 +407,7 @@ async function processRelayerBuyJob(job) {
     } catch (callbackError) {
       console.error(
         `[RELAYER] Callback failed thất bại cho order ${context.orderId}:`,
-        callbackError.message,
+        callbackError.response ? JSON.stringify(callbackError.response.data) : callbackError.message,
       );
     }
 

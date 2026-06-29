@@ -75,7 +75,7 @@ const config = {
   // 6. Cấu hình Backend API
   backend: {
     url: process.env.BACKEND_URL || "http://localhost:3001/api",
-    beApiUrl: process.env.BE_API_URL,
+    beApiUrl: process.env.BE_API_URL || "http://localhost:3001",
     internalWebhookSecret: process.env.INTERNAL_WEBHOOK_SECRET,
   },
 
@@ -96,7 +96,7 @@ const config = {
 
   // Alias để giữ tương thích với các file worker cũ đang dùng config.webhook
   webhook: {
-    beApiUrl: process.env.BE_API_URL,
+    beApiUrl: process.env.BE_API_URL || "http://localhost:3001",
     internalWebhookSecret: process.env.INTERNAL_WEBHOOK_SECRET,
   },
 };
