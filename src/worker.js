@@ -518,6 +518,16 @@ app.get("/", (req, res) => {
   res.send("Worker is running!");
 });
 
+// Endpoint dùng để chủ động "đánh thức" (wake up) worker
+app.get("/api/wakeup", (req, res) => {
+  console.log("⏰ Nhận request đánh thức Worker từ xa!");
+  res.status(200).json({
+    status: "success",
+    message: "Worker đã được đánh thức và đang hoạt động!",
+    timestamp: new Date().toISOString()
+  });
+});
+
 app.listen(port, () => {
   console.log(`Health check server listening on port ${port}`);
 });
